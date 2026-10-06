@@ -27,6 +27,8 @@ uniform float uDiskOpacity;
 uniform float uDiskTPeak;      // Kelvin at the hottest ring
 uniform float uDiskIntensity;  // overall brightness scale
 uniform float uDiskRotation;   // +1 or -1: sense of the orbital motion about +y
+uniform float uSimTime;        // simulation time, in units of M (G = c = 1)
+uniform float uDiskTurbulence; // 0 = smooth disk, 1 = strongly clumped
 uniform int uDiskDebug;        // 1 = debug checkerboard instead of physical shading
 uniform int uFxGravity;        // 1 = apply each redshift factor
 uniform int uFxTimeDilation;
@@ -65,6 +67,37 @@ vec3 blackbodyChroma(float kelvin)
 	return texture(uBlackbody, clamp(t, 0.0, 1.0)).rgb;
 }
 
+// One layer of disk turbulence at orbital radius r, azimuth phi, using the pattern as it would
+// look after rotating for `t` (every ring turns at its own Keplerian rate Omega(r) = r^-3/2, so
+// the pattern shears: the inner disk laps the outer disk).
+//
+// The noise is sampled on a circle (cos, sin) of the rotated angle, so it is periodic around the
+// disk with no seam. The circle's radius (3) is fixed while the radial frequency is 1.8 per M, so
+// features are about 0.6 r / 3 times longer along the orbit than across it (roughly 2-5x for
+// r = 10-25): elongated streaks that get more stretched the further out they are.
+float diskNoiseLayer(float r, float phi, float t, float seed)
+{
+	float omega = uDiskRotation * pow(r, -1.5);
+	float a = phi - omega * t;
+	vec3 p = vec3(3.0 * cos(a), 3.0 * sin(a), 1.8 * r + 41.0 * seed);
+	return fbm(p);
+}
+
+// Differential rotation winds any pattern into ever finer spirals. To keep detail readable, two
+// layers that restart every `tau` (half a period apart) are cross-faded, so no layer is ever more
+// than `tau` old and the one being reset has zero weight.
+float diskTurbulence(float r, float phi)
+{
+	const float tau = 50.0; // in M; the ISCO orbital period is 2 pi 6^1.5 = 92 M
+	float cycle = uSimTime / tau;
+	float f1 = fract(cycle), f2 = fract(cycle + 0.5);
+	float w1 = sin(3.14159265 * f1);
+	w1 *= w1;
+	float n1 = diskNoiseLayer(r, phi, f1 * tau, 0.0);
+	float n2 = diskNoiseLayer(r, phi, f2 * tau, 1.0);
+	return w1 * n1 + (1.0 - w1) * n2; // fbm is ~0.5 +- 0.25
+}
+
 // Debug view: checkerboard in (r, phi), makes the lensing geometry easy to read.
 vec4 diskDebugShade(float r, float phi)
 {
@@ -96,9 +129,18 @@ vec4 diskShade(float r, float phi, float by, float fCam)
 	float Tcolor = (uFxColorShift == 1) ? g * T : T;
 	float intensity = flux * ((uFxBeaming == 1) ? pow(g, uBeamExp) : 1.0);
 
-	vec3 rgb = blackbodyChroma(Tcolor) * intensity * uDiskIntensity;
+	// Clumpy, sheared density: modulates both emission and how opaque the gas is, so dense
+	// clumps glow brighter and thin gaps let the far side of the disk show through.
+	float dens = 1.0;
+	if (uDiskTurbulence > 0.0) {
+		float n = smoothstep(0.30, 0.70, diskTurbulence(r, phi));
+		dens = mix(1.0, 0.15 + 1.7 * n, uDiskTurbulence);
+	}
 
-	// Soft outer edge so the disk fades out instead of ending at a hard line.
-	float edge = 1.0 - smoothstep(uDiskOuter - 4.0, uDiskOuter, r);
-	return vec4(rgb, uDiskOpacity * edge);
+	vec3 rgb = blackbodyChroma(Tcolor) * intensity * uDiskIntensity * dens;
+
+	// Soft edges so the disk fades out instead of ending at hard lines.
+	float edge = (1.0 - smoothstep(uDiskOuter - 4.0, uDiskOuter, r)) * smoothstep(R_ISCO, R_ISCO + 0.7, r);
+	float opacity = uDiskOpacity * edge * mix(1.0, smoothstep(0.05, 0.9, dens), 0.8 * uDiskTurbulence);
+	return vec4(rgb, opacity);
 }

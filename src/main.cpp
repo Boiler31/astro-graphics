@@ -60,12 +60,16 @@ int main(int argc, char** argv)
 	//   --fx LETTERS          enabled disk effects: g gravity, t time dilation, d Doppler,
 	//                         c color shift, b beaming (default "gtdcb"; "-" for none)
 	//   --checker             start with the debug checkerboard disk
+	//   --time T              start the simulation clock at T (units of M) and pause it
+	//   --turb X              disk turbulence 0..1
 	//   --tpeak K             disk peak temperature in Kelvin
 	//   --bright X            disk brightness scale
 	//   --beamexp N           beaming exponent (4 = physical)
 	std::string fxLetters = "gtdcb";
 	bool startChecker = false;
-	float startTPeak = -1.f, startBright = -1.f, startBeamExp = -1.f;
+	float startTPeak = -1.f, startBright = -1.f, startBeamExp = -1.f, startTurb = -1.f;
+	float startTime = 0.f;
+	bool timeGiven = false;
 	int maxFrames = -1;
 	bool startWithoutGR = false;
 	bool vsync = true;
@@ -86,6 +90,11 @@ int main(int argc, char** argv)
 			startBright = static_cast<float>(std::atof(argv[++i]));
 		} else if (std::strcmp(argv[i], "--beamexp") == 0 && i + 1 < argc) {
 			startBeamExp = static_cast<float>(std::atof(argv[++i]));
+		} else if (std::strcmp(argv[i], "--time") == 0 && i + 1 < argc) {
+			startTime = static_cast<float>(std::atof(argv[++i]));
+			timeGiven = true;
+		} else if (std::strcmp(argv[i], "--turb") == 0 && i + 1 < argc) {
+			startTurb = static_cast<float>(std::atof(argv[++i]));
 		} else if (std::strcmp(argv[i], "--tpeak") == 0 && i + 1 < argc) {
 			startTPeak = static_cast<float>(std::atof(argv[++i]));
 		} else if (std::strcmp(argv[i], "--size") == 0 && i + 2 < argc) {
@@ -158,7 +167,13 @@ int main(int argc, char** argv)
 	float diskTPeak = 5500.f;      // Kelvin at the hottest ring (artistic: real ones are ~1e7 K)
 	float diskIntensity = 3.0f;
 	float beamExp = 4.0f;          // 4 = physical beaming (g^4); lower = artistic
+	float diskTurbulence = startTurb >= 0.f ? startTurb : 0.7f;
 	bool diskReverse = false;      // sense of rotation about +y
+
+	// Simulation clock, in units of M (G = c = 1). The ISCO orbital period is 2 pi 6^1.5 ~ 92 M.
+	double simTime = startTime;
+	float simSpeed = 20.f;         // M per real second
+	bool simRunning = !timeGiven;  // --time pins the clock for reproducible screenshots
 	bool diskDebug = startChecker; // checkerboard instead of physical shading
 	if (startTPeak > 0.f) diskTPeak = startTPeak;
 	if (startBright > 0.f) diskIntensity = startBright;
@@ -190,6 +205,9 @@ int main(int argc, char** argv)
 		lastTime = now;
 
 		ImGuiIO& io = ImGui::GetIO();
+		if (simRunning) {
+			simTime += dt * simSpeed;
+		}
 
 		if (g_reloadRequested) {
 			g_reloadRequested = false;
@@ -257,6 +275,8 @@ int main(int argc, char** argv)
 			program.SendUniformData(diskTPeak, "uDiskTPeak");
 			program.SendUniformData(diskIntensity, "uDiskIntensity");
 			program.SendUniformData(diskReverse ? -1.f : 1.f, "uDiskRotation");
+			program.SendUniformData(static_cast<float>(simTime), "uSimTime");
+			program.SendUniformData(diskTurbulence, "uDiskTurbulence");
 			program.SendUniformData(diskDebug ? 1 : 0, "uDiskDebug");
 			program.SendUniformData(fxGravity ? 1 : 0, "uFxGravity");
 			program.SendUniformData(fxTimeDilation ? 1 : 0, "uFxTimeDilation");
@@ -322,7 +342,20 @@ int main(int argc, char** argv)
 			ImGui::Checkbox("Debug checkerboard", &diskDebug);
 			ImGui::SliderFloat("Peak temperature (K)", &diskTPeak, 2000.f, 30000.f, "%.0f", ImGuiSliderFlags_Logarithmic);
 			ImGui::SliderFloat("Brightness", &diskIntensity, 0.1f, 8.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+			ImGui::SliderFloat("Turbulence", &diskTurbulence, 0.f, 1.f, "%.2f");
 			ImGui::Checkbox("Reverse rotation", &diskReverse);
+			ImGui::SeparatorText("Time");
+			ImGui::Checkbox("Run", &simRunning);
+			ImGui::SameLine();
+			if (ImGui::Button("Reset time")) {
+				simTime = 0.0;
+			}
+			ImGui::SliderFloat("Speed (M/s)", &simSpeed, 0.f, 200.f, "%.0f", ImGuiSliderFlags_Logarithmic);
+			// Geometric units -> seconds: 1 M = G M_sun / c^3 = 4.925 microseconds per solar mass.
+			const double iscoPeriod = 2.0 * 3.14159265358979 * std::pow(6.0, 1.5);
+			ImGui::Text("t = %.0f M     ISCO orbit = %.0f M", simTime, iscoPeriod);
+			ImGui::TextDisabled("= %.1f ms for 10 Msun, %.0f min for Sgr A*", iscoPeriod * 4.925e-6 * 10.0 * 1e3,
+			                    iscoPeriod * 4.925e-6 * 4.3e6 / 60.0);
 			ImGui::SeparatorText("Relativistic effects");
 			ImGui::TextDisabled("The first three change the frequency shift g;");
 			ImGui::TextDisabled("color shift and beaming decide how g is shown.");
