@@ -118,3 +118,18 @@ encoder (GPU-accelerated where available); no ffmpeg needed.
 Options: `--fps N` (60), `--bitrate MBPS` (40), `--steps N` (800), `--scale S` (2 = supersampling),
 `--fade S` / `--fadein S` (1.5 / 0.5 s), `--range A B`, `--simspeed X` (disk animation speed, M per second
 of path time), `--hud`. A 1080p frame takes ~25 ms (supersampled, including encoding).
+
+### Compressing a render
+
+`VideoTool` re-encodes a render at a lower bitrate with Windows' built-in codecs (no ffmpeg), e.g. to fit an upload limit:
+
+```powershell
+# aim for a file under 50 MB (it retries at a lower bitrate if the first attempt comes out over)
+.\build\Release\VideoTool.exe compress renders\blackhole.mp4 renders\blackhole_small.mp4 --target-mb 48
+
+# or choose the bitrate yourself (Mbit/s)
+.\build\Release\VideoTool.exe compress renders\blackhole.mp4 renders\blackhole_small.mp4 --bitrate 12
+```
+
+The original is never modified. As a rule of thumb, 1080p looks fine from about 12-16 Mbit/s; the renderer's own
+default is 40 (the Render panel's Bitrate slider sets it directly if you would rather render small in the first place).

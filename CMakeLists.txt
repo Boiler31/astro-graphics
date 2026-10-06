@@ -109,3 +109,14 @@ TARGET_INCLUDE_DIRECTORIES(GeodesicTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 SET_TARGET_PROPERTIES(GeodesicTests PROPERTIES CXX_STANDARD 17)
 ENABLE_TESTING()
 ADD_TEST(NAME geodesic COMMAND GeodesicTests)
+
+# ---------------------------------------------------------------------------------------
+# VideoTool: re-encode / compress an mp4 with Windows' built-in codecs (no ffmpeg needed).
+#   build\Release\VideoTool.exe compress renders\in.mp4 renders\out.mp4 --target-mb 50
+# ---------------------------------------------------------------------------------------
+IF(WIN32)
+	ADD_EXECUTABLE(VideoTool tools/video_tool.cpp src/VideoWriter.cpp)
+	TARGET_INCLUDE_DIRECTORIES(VideoTool PRIVATE ${CMAKE_SOURCE_DIR}/src)
+	SET_TARGET_PROPERTIES(VideoTool PROPERTIES CXX_STANDARD 17)
+	TARGET_LINK_LIBRARIES(VideoTool mfplat.lib mfreadwrite.lib mfuuid.lib ole32.lib)
+ENDIF()
