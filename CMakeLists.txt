@@ -98,3 +98,12 @@ ELSE()
 		TARGET_LINK_LIBRARIES(${CMAKE_PROJECT_NAME} "GL")
 	ENDIF()
 ENDIF()
+
+# ---------------------------------------------------------------------------------------
+# Physics validation (no OpenGL): `ctest -C Release` or run build/Release/GeodesicTests.exe
+# ---------------------------------------------------------------------------------------
+ADD_EXECUTABLE(GeodesicTests tests/geodesic_tests.cpp src/Geodesic.cpp)
+TARGET_INCLUDE_DIRECTORIES(GeodesicTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+SET_TARGET_PROPERTIES(GeodesicTests PROPERTIES CXX_STANDARD 17)
+ENABLE_TESTING()
+ADD_TEST(NAME geodesic COMMAND GeodesicTests)

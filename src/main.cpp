@@ -6,12 +6,14 @@
 #include "imgui_impl_opengl3.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
 
 #include "Camera.h"
+#include "Geodesic.h"
 #include "Program.h"
 #include "Screenshot.h"
 #include "Texture.h"
@@ -51,11 +53,25 @@ int main(int argc, char** argv)
 	//   --frames N            exit after N frames
 	//   --screenshot FILE     render a few frames, save FILE (no GUI), exit
 	//   --cam X Y Z YAW PITCH start camera pose (degrees)
+	//   --nogr                start with light bending off (straight rays)
+	//   --novsync             disable vsync (use with --frames to benchmark)
+	//   --size W H            window size (default 1280 720)
 	int maxFrames = -1;
+	bool startWithoutGR = false;
+	bool vsync = true;
+	int winW = 1280, winH = 720;
 	std::string screenshotPath;
 	for (int i = 1; i < argc; i++) {
 		if (std::strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
 			maxFrames = std::atoi(argv[++i]);
+		} else if (std::strcmp(argv[i], "--nogr") == 0) {
+			startWithoutGR = true;
+		} else if (std::strcmp(argv[i], "--novsync") == 0) {
+			vsync = false;
+		} else if (std::strcmp(argv[i], "--size") == 0 && i + 2 < argc) {
+			winW = std::atoi(argv[i + 1]);
+			winH = std::atoi(argv[i + 2]);
+			i += 2;
 		} else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
 			screenshotPath = argv[++i];
 		} else if (std::strcmp(argv[i], "--cam") == 0 && i + 5 < argc) {
@@ -74,13 +90,13 @@ int main(int argc, char** argv)
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 
-	GLFWwindow* window = glfwCreateWindow(1280, 720, "Black Hole", nullptr, nullptr);
+	GLFWwindow* window = glfwCreateWindow(winW, winH, "Black Hole", nullptr, nullptr);
 	if (!window) {
 		glfwTerminate();
 		return -1;
 	}
 	glfwMakeContextCurrent(window);
-	glfwSwapInterval(1);
+	glfwSwapInterval(vsync ? 1 : 0);
 	glfwSetKeyCallback(window, KeyCallback);
 
 	glewExperimental = GL_TRUE;
@@ -109,6 +125,12 @@ int main(int argc, char** argv)
 	int skyMode = skyTex ? 1 : 0; // 0 = procedural, 1 = texture
 	float exposure = 1.0f;
 
+	// Light bending (see shaders/geodesic.glsl). 0.25 keeps angular momentum drift ~1e-6.
+	bool lensing = !startWithoutGR;
+	int maxSteps = 400;
+	float stepScale = 0.25f;
+	const float kMinCameraRadius = 2.1f; // keep the static observer outside the horizon
+
 	// Core profile needs a VAO bound even when the vertex shader reads no attributes.
 	GLuint vao = 0;
 	glGenVertexArrays(1, &vao);
@@ -117,6 +139,7 @@ int main(int argc, char** argv)
 	bool mouseLook = false;
 	double lastX = 0.0, lastY = 0.0;
 	double lastTime = glfwGetTime();
+	const double loopStart = lastTime;
 	int frame = 0;
 
 	while (!glfwWindowShouldClose(window)) {
@@ -159,6 +182,12 @@ int main(int argc, char** argv)
 		if (!io.WantCaptureKeyboard) {
 			camera.Update(window, dt);
 		}
+		if (lensing) {
+			float r = glm::length(camera.position);
+			if (r < kMinCameraRadius) {
+				camera.position = (r > 1e-6f ? camera.position / r : glm::vec3(0.f, 0.f, 1.f)) * kMinCameraRadius;
+			}
+		}
 
 		int fbw, fbh;
 		glfwGetFramebufferSize(window, &fbw, &fbh);
@@ -179,6 +208,9 @@ int main(int argc, char** argv)
 			program.SendUniformData(camera.TanHalfFov(), "uTanHalfFov");
 			program.SendUniformData(skyMode, "uSkyMode");
 			program.SendUniformData(exposure, "uExposure");
+			program.SendUniformData(lensing ? 1 : 0, "uGR");
+			program.SendUniformData(maxSteps, "uMaxSteps");
+			program.SendUniformData(stepScale, "uStepScale");
 			if (skyTex) {
 				glActiveTexture(GL_TEXTURE0);
 				glBindTexture(GL_TEXTURE_2D, skyTex);
@@ -213,6 +245,18 @@ int main(int argc, char** argv)
 				camera.Reset();
 			}
 		}
+		if (ImGui::CollapsingHeader("Light bending", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Checkbox("General relativity (lensing)", &lensing);
+			ImGui::SliderInt("Max steps", &maxSteps, 50, 1500);
+			ImGui::SliderFloat("Step scale", &stepScale, 0.05f, 0.6f, "%.2f");
+			if (lensing) {
+				double rCam = glm::length(camera.position);
+				double alpha = geo::ShadowAngularRadius(rCam);
+				double pixels = std::tan(alpha) / camera.TanHalfFov() * (0.5 * fbh);
+				ImGui::Text("Shadow radius: %.2f deg (%.0f px)", glm::degrees(alpha), pixels);
+				ImGui::TextDisabled("sin(a) = 3*sqrt(3)*M/r * sqrt(1-2M/r)");
+			}
+		}
 		if (ImGui::CollapsingHeader("Sky", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::RadioButton("Procedural stars", &skyMode, 0);
 			if (!skyTex) ImGui::BeginDisabled();
@@ -236,6 +280,10 @@ int main(int argc, char** argv)
 		glfwSwapBuffers(window);
 
 		if (maxFrames > 0 && ++frame >= maxFrames) {
+			glFinish();
+			double secs = glfwGetTime() - loopStart;
+			std::cout << "Rendered " << frame << " frames in " << secs << " s ("
+			          << 1000.0 * secs / frame << " ms/frame, " << frame / secs << " fps)" << std::endl;
 			break;
 		}
 	}

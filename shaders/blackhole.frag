@@ -1,9 +1,11 @@
 #version 410 core
 
 #include "sky.glsl"
+#include "geodesic.glsl"
 
-// M1: flat-space ray tracer. Every pixel gets a straight ray from the camera and looks up the
-// sky in that direction. M2 will bend the rays around the black hole before the lookup.
+// M2: Schwarzschild lensing. Every pixel's camera ray is marched along the bent light path
+// around the black hole (at the origin) until it falls in (black) or escapes (sky lookup by the
+// final direction). The accretion disk joins the loop in M3.
 in vec2 vUV;
 out vec4 fragColor;
 
@@ -16,15 +18,63 @@ uniform float uTanHalfFov;
 uniform int uSkyMode;    // 0 = procedural stars, 1 = texture
 uniform float uExposure;
 
+uniform int uGR;         // 1 = bend light around the black hole, 0 = straight rays
+uniform int uMaxSteps;   // integration step budget per ray
+uniform float uStepScale; // dt = uStepScale * (r - 2M)
+
 void main()
 {
 	vec2 ndc = vUV * 2.0 - 1.0;
 	ndc.x *= uResolution.x / uResolution.y;
-	vec3 dir = normalize(uCamForward + ndc.x * uTanHalfFov * uCamRight + ndc.y * uTanHalfFov * uCamUp);
+	vec3 rayDir = normalize(uCamForward + ndc.x * uTanHalfFov * uCamRight + ndc.y * uTanHalfFov * uCamUp);
 
-	// Approximate angle covered by one pixel (at screen center).
+	// Angle covered by one pixel (at screen center).
 	float pixAngle = 2.0 * uTanHalfFov / uResolution.y;
 
-	vec3 col = (uSkyMode == 1) ? textureSky(dir) : proceduralSky(dir, pixAngle);
+	vec3 dir = rayDir;
+	bool captured = false;
+
+	if (uGR == 1) {
+		vec3 x = uCamPos;
+		float rCam = length(x);
+		if (rCam <= CAPTURE_RADIUS) {
+			captured = true; // inside the horizon: static observers don't exist there
+		}
+		vec3 v = staticObserverVelocity(x, rayDir);
+		vec3 hvec = cross(x, v);
+		float h2 = dot(hvec, hvec);
+		float rFar = max(5000.0, 4.0 * rCam);
+
+		bool done = captured;
+		for (int i = 0; i < uMaxSteps && !done; i++) {
+			float r = length(x);
+			if (r < CAPTURE_RADIUS) {
+				captured = true;
+				done = true;
+			} else if (r > rFar && dot(x, v) > 0.0) {
+				done = true; // escaped; v is now the asymptotic direction
+			} else {
+				rk4Step(x, v, h2, uStepScale * (r - R_HORIZON));
+			}
+		}
+		if (!done) {
+			captured = true; // out of steps: only rays skimming the photon sphere end up here
+		}
+		dir = normalize(v);
+	}
+
+	// Lensing stretches and squeezes the sky, so one pixel can cover many (or few) sky pixels.
+	// Estimate the footprint from how fast the final direction changes between neighbors, so
+	// stars stay smooth instead of sparkling. (Derivatives are taken after the loop, outside any
+	// branch, so they are defined for every pixel in the quad.)
+	float footprint = pixAngle;
+	if (uGR == 1) {
+		footprint = clamp(max(length(dFdx(dir)), length(dFdy(dir))), pixAngle, 24.0 * pixAngle);
+	}
+
+	vec3 col = vec3(0.0);
+	if (!captured) {
+		col = (uSkyMode == 1) ? textureSky(dir) : proceduralSky(dir, footprint);
+	}
 	fragColor = vec4(col * uExposure, 1.0);
 }

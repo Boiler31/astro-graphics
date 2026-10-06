@@ -1,0 +1,140 @@
+// Validation of the light-bending math against known GR results (PLAN.md section 5).
+// No OpenGL needed. Exit code is the number of failed checks.
+#include "Geodesic.h"
+
+#include <cmath>
+#include <cstdio>
+#include <initializer_list>
+
+static int g_failures = 0;
+
+static void Check(bool ok, const char* name, const char* fmt, double a, double b)
+{
+	char detail[160];
+	std::snprintf(detail, sizeof(detail), fmt, a, b);
+	std::printf("[%s] %s  (%s)\n", ok ? "PASS" : "FAIL", name, detail);
+	if (!ok) g_failures++;
+}
+
+static double AngleBetween(const glm::dvec3& a, const glm::dvec3& b)
+{
+	return std::atan2(glm::length(glm::cross(a, b)), glm::dot(a, b));
+}
+
+// Static observer at (0, 0, r0) looking inward with a straight-line impact parameter b, in the
+// x-z plane. b = r sin(psi) / sqrt(1 - 2M/r) for a static observer.
+static glm::dvec3 InwardDir(double r0, double b)
+{
+	double f = 1.0 - geo::kHorizon / r0;
+	double s = b * std::sqrt(f) / r0;
+	return glm::dvec3(s, 0.0, -std::sqrt(1.0 - s * s));
+}
+
+// 1. Weak-field deflection: alpha = 4M/b + (15 pi / 4)(M/b)^2 + ... (Einstein 1915; the eclipse
+//    measurement of 1919 confirmed the 4M/b term).
+static void TestWeakFieldDeflection()
+{
+	const double r0 = 1.0e6;
+	for (double b : {50.0, 100.0, 400.0, 2000.0}) {
+		glm::dvec3 n = InwardDir(r0, b);
+		geo::TraceResult res = geo::TraceFromStaticObserver(glm::dvec3(0, 0, r0), n, 20000, 0.1, 1.0e7);
+		glm::dvec3 v0 = geo::StaticObserverVelocity(glm::dvec3(0, 0, r0), n);
+		double defl = AngleBetween(v0, res.dir);
+		double expected = 4.0 / b + (15.0 * 3.14159265358979 / 4.0) / (b * b);
+		double relErr = std::fabs(defl - expected) / expected;
+		char name[64];
+		std::snprintf(name, sizeof(name), "weak-field deflection, b = %.0f M", b);
+		Check(relErr < 0.01, name, "measured %.6f rad, expected %.6f rad", defl, expected);
+	}
+}
+
+// 2. Critical impact parameter: b slightly below 3 sqrt(3) M is captured, slightly above escapes.
+static void TestCriticalImpactParameter()
+{
+	const double r0 = 1.0e4;
+	const double bc = geo::kCriticalImpact;
+	for (double eps : {1e-2, 1e-3}) {
+		glm::dvec3 cam(0, 0, r0);
+		auto below = geo::TraceFromStaticObserver(cam, InwardDir(r0, bc * (1.0 - eps)), 20000, 0.25);
+		auto above = geo::TraceFromStaticObserver(cam, InwardDir(r0, bc * (1.0 + eps)), 20000, 0.25);
+		char name[64];
+		std::snprintf(name, sizeof(name), "critical b: captured below / escapes above (eps=%g)", eps);
+		Check(below.captured && !above.captured, name, "below captured=%.0f, above captured=%.0f",
+		      below.captured ? 1.0 : 0.0, above.captured ? 1.0 : 0.0);
+	}
+}
+
+// 3. Photon sphere: a photon launched tangentially at r = 3M stays on the circular (unstable)
+//    orbit for at least a full revolution.
+static void TestPhotonSphere()
+{
+	glm::dvec3 x(0, 0, geo::kPhotonSphere);
+	glm::dvec3 v = geo::StaticObserverVelocity(x, glm::dvec3(1, 0, 0)); // tangential
+	glm::dvec3 h = glm::cross(x, v);
+	double h2 = glm::dot(h, h);
+	double maxDev = 0.0, swept = 0.0;
+	glm::dvec3 prev = x;
+	const double dt = 0.01;
+	for (int i = 0; i < 200000 && swept < 2.0 * 3.14159265358979; i++) {
+		geo::Rk4Step(x, v, h2, dt);
+		maxDev = std::fmax(maxDev, std::fabs(glm::length(x) - geo::kPhotonSphere));
+		swept += AngleBetween(prev, x);
+		prev = x;
+	}
+	Check(maxDev < 1e-3 && swept >= 2.0 * 3.14159265358979, "photon sphere holds for one revolution",
+	      "max |r-3M| = %.2e, swept %.3f rad", maxDev, swept);
+}
+
+// 4. Conservation: h = |x cross v| should not drift over a full trace.
+static void TestConservation()
+{
+	for (double k : {0.25, 0.1}) {
+		glm::dvec3 x(0, 0, 100.0);
+		glm::dvec3 v = geo::StaticObserverVelocity(x, InwardDir(100.0, 8.0));
+		double h0 = glm::length(glm::cross(x, v));
+		double maxDrift = 0.0;
+		for (int i = 0; i < 5000; i++) {
+			double r = glm::length(x);
+			if (r < geo::kCaptureRadius || (r > 5000.0 && glm::dot(x, v) > 0.0)) break;
+			double h = h0 * h0;
+			geo::Rk4Step(x, v, h, k * (r - geo::kHorizon));
+			maxDrift = std::fmax(maxDrift, std::fabs(glm::length(glm::cross(x, v)) - h0) / h0);
+		}
+		char name[64];
+		std::snprintf(name, sizeof(name), "angular momentum conserved (step scale %.2f)", k);
+		Check(maxDrift < 1e-4, name, "max relative drift %.2e (limit %.0e)", maxDrift, 1e-4);
+	}
+}
+
+// 5. Shadow size: bisect the capture boundary in view angle and compare with
+//    sin(alpha) = (3 sqrt(3) M / r) sqrt(1 - 2M/r). This exercises the static-observer ray
+//    conversion and the integrator together.
+static void TestShadowSize()
+{
+	for (double r : {6.0, 10.0, 20.0, 50.0, 200.0}) {
+		glm::dvec3 cam(0, 0, r);
+		double lo = 0.0, hi = 1.5707963; // captured at lo, escapes at hi
+		for (int i = 0; i < 40; i++) {
+			double mid = 0.5 * (lo + hi);
+			glm::dvec3 n(std::sin(mid), 0.0, -std::cos(mid));
+			if (geo::TraceFromStaticObserver(cam, n, 20000, 0.25).captured) lo = mid; else hi = mid;
+		}
+		double measured = 0.5 * (lo + hi);
+		double expected = geo::ShadowAngularRadius(r);
+		char name[64];
+		std::snprintf(name, sizeof(name), "shadow angular radius at r = %.0f M", r);
+		Check(std::fabs(measured - expected) / expected < 1e-3, name,
+		      "measured %.5f rad, expected %.5f rad", measured, expected);
+	}
+}
+
+int main()
+{
+	TestWeakFieldDeflection();
+	TestCriticalImpactParameter();
+	TestPhotonSphere();
+	TestConservation();
+	TestShadowSize();
+	std::printf("\n%d failure(s)\n", g_failures);
+	return g_failures;
+}

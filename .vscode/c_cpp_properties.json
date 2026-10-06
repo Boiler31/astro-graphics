@@ -1,0 +1,24 @@
+{
+	"configurations": [
+		{
+			"name": "Win32",
+			"includePath": [
+				"${workspaceFolder}/src",
+				"${workspaceFolder}/third_party/imgui",
+				"${workspaceFolder}/third_party/imgui/backends",
+				"${workspaceFolder}/third_party/stb",
+				"${env:GLM_INCLUDE_DIR}",
+				"${env:GLFW_DIR}/include",
+				"${env:GLEW_DIR}/include"
+			],
+			"defines": [
+				"GLEW_STATIC",
+				"BH_SHADER_DIR=\"shaders/\"",
+				"BH_RESOURCE_DIR=\"resources/\""
+			],
+			"cppStandard": "c++17",
+			"intelliSenseMode": "windows-msvc-x64"
+		}
+	],
+	"version": 4
+}
