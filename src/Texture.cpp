@@ -29,7 +29,9 @@ GLuint LoadTexture2D(const std::string& path, int* outWidth, int* outHeight)
 	glGenTextures(1, &tex);
 	glBindTexture(GL_TEXTURE_2D, tex);
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1); // RGB rows are not 4-byte aligned in general
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+	// Photos/star maps are sRGB-encoded; GL_SRGB8 makes the sampler return linear values, which is
+	// what the HDR pipeline (and its final sRGB encode) expects.
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
 	glGenerateMipmap(GL_TEXTURE_2D);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);

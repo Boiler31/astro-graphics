@@ -18,9 +18,10 @@ uniform vec3 uCamUp;
 uniform vec3 uCamForward;
 uniform float uTanHalfFov;
 uniform int uSkyMode;    // 0 = procedural stars, 1 = texture
-uniform float uExposure;
+uniform float uSkyGain;  // scales sky radiance (the sky is not physically calibrated)
+uniform int uSkyBlueshift; // 1 = blueshift/brighten the sky for observers deep in the well
 
-uniform int uGR;         // 1 = bend light around the black hole, 0 = straight rays
+uniform int uGR;        // 1 = bend light around the black hole, 0 = straight rays
 uniform int uMaxSteps;   // integration step budget per ray
 uniform float uStepScale; // dt = uStepScale * (r - 2M)
 uniform int uDisk;       // 1 = draw the accretion disk
@@ -100,22 +101,22 @@ void main()
 		footprint = clamp(max(length(dFdx(dir)), length(dFdy(dir))), pixAngle, 24.0 * pixAngle);
 	}
 
-	// The physical disk emission is HDR (the beamed side can be 10x brighter than the peak);
-	// squash it with a soft curve for now. M6 replaces this with bloom + a proper tonemap.
-	if (uDiskDebug == 0) {
-		// Compress by the brightest channel so hue is preserved, then let very bright areas
-		// roll off toward white the way an overexposed camera does.
-		float m = max(diskColor.r, max(diskColor.g, diskColor.b));
-		if (m > 1e-6) {
-			float compressed = 1.0 - exp(-m);
-			diskColor = mix(diskColor * (compressed / m), vec3(compressed), 0.6 * smoothstep(1.0, 6.0, m));
-		}
-	}
-
 	vec3 col = diskColor;
 	if (!captured && transmittance > 0.01) {
 		vec3 sky = (uSkyMode == 1) ? textureSky(dir) : proceduralSky(dir, footprint);
+		sky *= uSkyGain;
+
+		// A static observer deep in the potential well sees the sky blueshifted by
+		// g = 1 / sqrt(1 - 2M/r): brighter (bolometric intensity scales as g^4) and bluer. The
+		// tint is an artistic stand-in for shifting each star's spectrum.
+		if (uSkyBlueshift == 1 && uGR == 1) {
+			float gSky = inversesqrt(max(1.0 - R_HORIZON / length(uCamPos), 1e-3));
+			sky *= pow(gSky, 4.0) * mix(vec3(1.0), vec3(0.75, 0.9, 1.25), clamp(0.8 * log2(gSky), 0.0, 1.0));
+		}
 		col += transmittance * sky;
 	}
-	fragColor = vec4(col * uExposure, 1.0);
+
+	// Linear HDR radiance; exposure, bloom and the tonemap happen in later passes. Clamp to keep
+	// a stray overflowing pixel from smearing across the whole bloom chain.
+	fragColor = vec4(min(col, vec3(1.0e4)), 1.0);
 }

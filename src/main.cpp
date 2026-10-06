@@ -13,7 +13,9 @@
 #include <string>
 
 #include "Blackbody.h"
+#include "Bloom.h"
 #include "Camera.h"
+#include "Framebuffer.h"
 #include "Geodesic.h"
 #include "Program.h"
 #include "Screenshot.h"
@@ -60,6 +62,10 @@ int main(int argc, char** argv)
 	//   --fx LETTERS          enabled disk effects: g gravity, t time dilation, d Doppler,
 	//                         c color shift, b beaming (default "gtdcb"; "-" for none)
 	//   --checker             start with the debug checkerboard disk
+	//   --scale S             internal render scale (0.25..2; >1 supersamples)
+	//   --exposure E          exposure multiplier
+	//   --bloom B             bloom strength (0 = off)
+	//   --skygain G           sky brightness scale
 	//   --time T              start the simulation clock at T (units of M) and pause it
 	//   --turb X              disk turbulence 0..1
 	//   --tpeak K             disk peak temperature in Kelvin
@@ -70,6 +76,7 @@ int main(int argc, char** argv)
 	float startTPeak = -1.f, startBright = -1.f, startBeamExp = -1.f, startTurb = -1.f;
 	float startTime = 0.f;
 	bool timeGiven = false;
+	float startScale = 1.f, startExposure = 1.f, startBloom = 0.07f, startSkyGain = 0.3f;
 	int maxFrames = -1;
 	bool startWithoutGR = false;
 	bool vsync = true;
@@ -90,6 +97,14 @@ int main(int argc, char** argv)
 			startBright = static_cast<float>(std::atof(argv[++i]));
 		} else if (std::strcmp(argv[i], "--beamexp") == 0 && i + 1 < argc) {
 			startBeamExp = static_cast<float>(std::atof(argv[++i]));
+		} else if (std::strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
+			startScale = static_cast<float>(std::atof(argv[++i]));
+		} else if (std::strcmp(argv[i], "--exposure") == 0 && i + 1 < argc) {
+			startExposure = static_cast<float>(std::atof(argv[++i]));
+		} else if (std::strcmp(argv[i], "--bloom") == 0 && i + 1 < argc) {
+			startBloom = static_cast<float>(std::atof(argv[++i]));
+		} else if (std::strcmp(argv[i], "--skygain") == 0 && i + 1 < argc) {
+			startSkyGain = static_cast<float>(std::atof(argv[++i]));
 		} else if (std::strcmp(argv[i], "--time") == 0 && i + 1 < argc) {
 			startTime = static_cast<float>(std::atof(argv[++i]));
 			timeGiven = true;
@@ -148,11 +163,24 @@ int main(int argc, char** argv)
 		std::cerr << "Initial shader build failed; fix the shader and press R." << std::endl;
 	}
 
+	// Post-processing: the scene renders into an HDR target (at an adjustable internal scale),
+	// then bloom is computed from it and everything is tonemapped to the screen.
+	Program tonemap;
+	tonemap.SetShaderFiles("fullscreen.vert", "tonemap.frag");
+	tonemap.Load();
+	Bloom bloom;
+	bloom.Load();
+	Framebuffer sceneFbo;
+	float renderScale = std::clamp(startScale, 0.25f, 2.0f);
+	float exposure = startExposure;
+	float bloomStrength = startBloom;
+
 	// Optional equirectangular sky map. Without one we fall back to the procedural star field.
 	GLuint skyTex = LoadTexture2D(std::string(BH_RESOURCE_DIR) + "sky/sky.jpg");
 	if (!skyTex) skyTex = LoadTexture2D(std::string(BH_RESOURCE_DIR) + "sky/sky.png");
 	int skyMode = skyTex ? 1 : 0; // 0 = procedural, 1 = texture
-	float exposure = 1.0f;
+	float skyGain = startSkyGain;
+	bool skyBlueshift = true;
 
 	// Light bending (see shaders/geodesic.glsl). 0.25 keeps angular momentum drift ~1e-6.
 	bool lensing = !startWithoutGR;
@@ -165,7 +193,7 @@ int main(int argc, char** argv)
 	float diskOuter = 25.f;
 	float diskOpacity = 0.85f;
 	float diskTPeak = 5500.f;      // Kelvin at the hottest ring (artistic: real ones are ~1e7 K)
-	float diskIntensity = 3.0f;
+	float diskIntensity = 1.1f;
 	float beamExp = 4.0f;          // 4 = physical beaming (g^4); lower = artistic
 	float diskTurbulence = startTurb >= 0.f ? startTurb : 0.7f;
 	bool diskReverse = false;      // sense of rotation about +y
@@ -212,7 +240,10 @@ int main(int argc, char** argv)
 		if (g_reloadRequested) {
 			g_reloadRequested = false;
 			std::cout << "Reloading shaders..." << std::endl;
-			if (program.Load()) {
+			bool ok = program.Load();
+			ok = tonemap.Load() && ok;
+			ok = bloom.Load() && ok;
+			if (ok) {
 				std::cout << "Shaders reloaded." << std::endl;
 			}
 		}
@@ -252,20 +283,26 @@ int main(int argc, char** argv)
 		if (fbw == 0 || fbh == 0) {
 			continue; // minimized
 		}
-		glViewport(0, 0, fbw, fbh);
+
+		// 1. Scene -> HDR target at the internal resolution.
+		const int sceneW = std::max(1, static_cast<int>(fbw * renderScale + 0.5f));
+		const int sceneH = std::max(1, static_cast<int>(fbh * renderScale + 0.5f));
+		sceneFbo.Resize(sceneW, sceneH);
+		sceneFbo.Bind();
 		glClearColor(0.f, 0.f, 0.f, 1.f);
 		glClear(GL_COLOR_BUFFER_BIT);
 
 		if (program.GetPID() != 0) {
 			program.Bind();
-			program.SendUniformData(glm::vec2(static_cast<float>(fbw), static_cast<float>(fbh)), "uResolution");
+			program.SendUniformData(glm::vec2(static_cast<float>(sceneW), static_cast<float>(sceneH)), "uResolution");
 			program.SendUniformData(camera.position, "uCamPos");
 			program.SendUniformData(camera.Right(), "uCamRight");
 			program.SendUniformData(camera.Up(), "uCamUp");
 			program.SendUniformData(camera.Forward(), "uCamForward");
 			program.SendUniformData(camera.TanHalfFov(), "uTanHalfFov");
 			program.SendUniformData(skyMode, "uSkyMode");
-			program.SendUniformData(exposure, "uExposure");
+			program.SendUniformData(skyGain, "uSkyGain");
+			program.SendUniformData(skyBlueshift ? 1 : 0, "uSkyBlueshift");
 			program.SendUniformData(lensing ? 1 : 0, "uGR");
 			program.SendUniformData(maxSteps, "uMaxSteps");
 			program.SendUniformData(stepScale, "uStepScale");
@@ -293,6 +330,30 @@ int main(int argc, char** argv)
 				glBindTexture(GL_TEXTURE_2D, skyTex);
 				program.SendUniformData(0, "uSky");
 			}
+			glDrawArrays(GL_TRIANGLES, 0, 3);
+			Program::Unbind();
+		}
+
+		// 2. Bloom from the HDR scene.
+		GLuint bloomTex = sceneFbo.Texture();
+		if (bloomStrength > 0.f) {
+			bloomTex = bloom.Run(sceneFbo.Texture(), sceneW, sceneH);
+		}
+
+		// 3. Tonemap (+ bloom) to the screen. The linear filter on the scene texture resamples
+		// it when the internal scale is not 1.
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		glViewport(0, 0, fbw, fbh);
+		if (tonemap.GetPID() != 0) {
+			tonemap.Bind();
+			glActiveTexture(GL_TEXTURE0);
+			glBindTexture(GL_TEXTURE_2D, sceneFbo.Texture());
+			tonemap.SendUniformData(0, "uScene");
+			glActiveTexture(GL_TEXTURE1);
+			glBindTexture(GL_TEXTURE_2D, bloomTex);
+			tonemap.SendUniformData(1, "uBloom");
+			tonemap.SendUniformData(exposure, "uExposure");
+			tonemap.SendUniformData(bloomStrength, "uBloomStrength");
 			glDrawArrays(GL_TRIANGLES, 0, 3);
 			Program::Unbind();
 		}
@@ -376,12 +437,20 @@ int main(int argc, char** argv)
 				ImGui::EndDisabled();
 				ImGui::TextDisabled("(add resources/sky/sky.jpg for a texture)");
 			}
-			ImGui::SliderFloat("Exposure", &exposure, 0.1f, 4.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+			ImGui::SliderFloat("Sky brightness", &skyGain, 0.f, 3.f, "%.2f");
+			ImGui::Checkbox("Blueshift sky near the hole", &skyBlueshift);
 		}
-		if (!program.GetLog().empty()) {
+		if (ImGui::CollapsingHeader("Post-processing", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::SliderFloat("Exposure", &exposure, 0.1f, 8.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+			ImGui::SliderFloat("Bloom", &bloomStrength, 0.f, 1.f, "%.2f");
+			ImGui::SliderFloat("Render scale", &renderScale, 0.25f, 2.f, "%.2f");
+			ImGui::TextDisabled("%dx%d internal (>1 supersamples)", sceneW, sceneH);
+		}
+		std::string shaderLog = program.GetLog() + tonemap.GetLog() + bloom.GetLog();
+		if (!shaderLog.empty()) {
 			ImGui::Separator();
 			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Shader error (showing last good shader):");
-			ImGui::TextWrapped("%s", program.GetLog().c_str());
+			ImGui::TextWrapped("%s", shaderLog.c_str());
 		}
 		ImGui::End();
 		ImGui::Render();

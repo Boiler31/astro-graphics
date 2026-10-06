@@ -3,10 +3,11 @@
 Real-time OpenGL black hole fly-through (Schwarzschild lensing + accretion disk) for an
 intro astronomy class. See [PLAN.md](PLAN.md) for the design and milestones.
 
-**Status:** M0-M5 done (window + shader hot-reload, free-fly camera, procedural/texture sky,
+**Status:** M0-M6 done (window + shader hot-reload, free-fly camera, procedural/texture sky,
 Schwarzschild lensing with a validated integrator, accretion disk with physical shading:
 temperature profile, Doppler + gravitational redshift, beaming, blackbody colors, sheared
-turbulent disk animated by Keplerian differential rotation). Next: M6 (HDR, bloom, tonemapping).
+turbulent disk animated by Keplerian differential rotation, HDR pipeline with bloom + ACES
+tonemapping + supersampling). Next: M7 (camera paths and moving observers).
 
 ## Build (Windows, Visual Studio 2022)
 
@@ -26,7 +27,9 @@ globbed, so re-run the configure step after adding a new `.cpp`.
 Command-line flags (mostly for testing): `--frames N` exits after N frames and prints the average
 frame time; `--screenshot out.png` renders one frame (no GUI) and exits; `--cam X Y Z YAW PITCH`
 sets the start pose (degrees; the black hole is at the origin, distances are in units of M);
-`--nogr` starts with straight rays; `--novsync` and `--size W H` for benchmarking.
+`--nogr` starts with straight rays; `--novsync` and `--size W H` for benchmarking; `--scale S`
+(internal render scale, 2 = 2x supersampling), `--exposure`, `--bloom`, `--skygain`, `--time T`
+(pin the simulation clock), `--fx gtdcb` (which disk effects are on), `--tpeak`, `--bright`.
 
 ## Physics validation
 

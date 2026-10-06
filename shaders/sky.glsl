@@ -4,8 +4,9 @@
 //   proceduralSky(d, pixAngle): hash-based star field + faint Milky Way band, no assets needed.
 //   textureSky(d): equirectangular image (resources/sky/sky.jpg), if present.
 //
-// NOTE on color: until the HDR/tonemap pass (M6) the output is treated as display-referred,
-// so the star brightnesses here are tuned to look right directly on screen.
+// NOTE on color: values are linear radiance for the HDR pipeline (exposure, bloom, ACES
+// tonemap and sRGB encode happen afterwards). The sky is not physically calibrated; blackhole.frag
+// scales it with uSkyGain to balance it against the disk.
 
 uniform sampler2D uSky;
 
