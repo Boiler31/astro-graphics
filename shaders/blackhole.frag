@@ -50,6 +50,12 @@ void main()
 		float h2 = dot(hvec, hvec);
 		float rFar = max(5000.0, 4.0 * rCam);
 
+		// For the disk's redshift: the photon's conserved angular momentum about the disk axis
+		// (y) per unit energy, b_y = L_y / E. The photon travels opposite to the traced ray, hence
+		// the minus sign; E = sqrt(f_cam) for unit local energy at the camera.
+		float fCam = max(1.0 - R_HORIZON / rCam, 1e-4);
+		float by = -cross(x, rayDir).y / sqrt(fCam);
+
 		bool done = captured;
 		for (int i = 0; i < uMaxSteps && !done; i++) {
 			float r = length(x);
@@ -69,7 +75,7 @@ void main()
 					vec3 p = hermiteSegment(x0, v0, x, v, dt, s);
 					float rd = length(p.xz);
 					if (rd > R_ISCO && rd < uDiskOuter) {
-						vec4 e = diskShade(rd, atan(p.z, p.x));
+						vec4 e = diskShade(rd, atan(p.z, p.x), by, fCam);
 						diskColor += transmittance * e.a * e.rgb;
 						transmittance *= 1.0 - e.a;
 						if (transmittance < 0.01) {
@@ -92,6 +98,18 @@ void main()
 	float footprint = pixAngle;
 	if (uGR == 1) {
 		footprint = clamp(max(length(dFdx(dir)), length(dFdy(dir))), pixAngle, 24.0 * pixAngle);
+	}
+
+	// The physical disk emission is HDR (the beamed side can be 10x brighter than the peak);
+	// squash it with a soft curve for now. M6 replaces this with bloom + a proper tonemap.
+	if (uDiskDebug == 0) {
+		// Compress by the brightest channel so hue is preserved, then let very bright areas
+		// roll off toward white the way an overexposed camera does.
+		float m = max(diskColor.r, max(diskColor.g, diskColor.b));
+		if (m > 1e-6) {
+			float compressed = 1.0 - exp(-m);
+			diskColor = mix(diskColor * (compressed / m), vec3(compressed), 0.6 * smoothstep(1.0, 6.0, m));
+		}
 	}
 
 	vec3 col = diskColor;

@@ -5,6 +5,18 @@
 
 #include <iostream>
 
+GLuint CreateColorLut1D(const std::vector<glm::vec3>& colors)
+{
+	GLuint tex = 0;
+	glGenTextures(1, &tex);
+	glBindTexture(GL_TEXTURE_1D, tex);
+	glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB16F, static_cast<GLsizei>(colors.size()), 0, GL_RGB, GL_FLOAT, colors.data());
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	return tex;
+}
+
 GLuint LoadTexture2D(const std::string& path, int* outWidth, int* outHeight)
 {
 	int w = 0, h = 0, n = 0;

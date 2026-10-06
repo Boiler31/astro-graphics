@@ -1,5 +1,6 @@
 // Validation of the light-bending math against known GR results (PLAN.md section 5).
 // No OpenGL needed. Exit code is the number of failed checks.
+#include "Blackbody.h"
 #include "Geodesic.h"
 
 #include <cmath>
@@ -128,9 +129,32 @@ static void TestShadowSize()
 	}
 }
 
+// 6. Blackbody colors follow the familiar sequence: red-orange when cool, near white around
+//    6500 K (daylight), blue-white when hot.
+static void TestBlackbodyColors()
+{
+	glm::vec3 cool = blackbody::Color(2000.0);
+	Check(cool.r == 1.0f && cool.g < 0.55f && cool.b < 0.15f, "2000 K is deep orange-red", "g = %.2f, b = %.2f", cool.g, cool.b);
+	glm::vec3 day = blackbody::Color(6500.0);
+	Check(day.r > 0.85f && day.g > 0.85f && day.b > 0.85f, "6500 K is nearly white", "min channel %.2f, max %.2f",
+	      std::fmin(day.r, std::fmin(day.g, day.b)), std::fmax(day.r, std::fmax(day.g, day.b)));
+	glm::vec3 hot = blackbody::Color(20000.0);
+	Check(hot.b == 1.0f && hot.r < 0.8f && hot.r > 0.4f, "20000 K is blue-white", "r = %.2f, g = %.2f", hot.r, hot.g);
+	// Blue fraction rises and red fraction falls monotonically with temperature.
+	bool monotone = true;
+	glm::vec3 prev = blackbody::Color(1000.0);
+	for (double t = 1100.0; t <= 40000.0; t *= 1.1) {
+		glm::vec3 c = blackbody::Color(t);
+		if (c.b / (c.r + 1e-9f) < prev.b / (prev.r + 1e-9f) - 1e-6f) monotone = false;
+		prev = c;
+	}
+	Check(monotone, "blue/red ratio increases with temperature", "%.0f, %.0f", 1.0, 1.0);
+}
+
 int main()
 {
 	TestWeakFieldDeflection();
+	TestBlackbodyColors();
 	TestCriticalImpactParameter();
 	TestPhotonSphere();
 	TestConservation();

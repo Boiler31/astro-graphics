@@ -3,8 +3,9 @@
 Real-time OpenGL black hole fly-through (Schwarzschild lensing + accretion disk) for an
 intro astronomy class. See [PLAN.md](PLAN.md) for the design and milestones.
 
-**Status:** M0-M3 done (window + shader hot-reload, free-fly camera, procedural/texture sky,
-Schwarzschild lensing with a validated integrator, accretion disk geometry with a debug checkerboard). Next: M4 (physical disk shading).
+**Status:** M0-M4 done (window + shader hot-reload, free-fly camera, procedural/texture sky,
+Schwarzschild lensing with a validated integrator, accretion disk with physical shading:
+temperature profile, Doppler + gravitational redshift, beaming, blackbody colors). Next: M5 (disk detail and animation).
 
 ## Build (Windows, Visual Studio 2022)
 
