@@ -319,6 +319,10 @@ Tests in `tests/geodesic_tests.cpp` run the CPU integrator:
 
 ## 6. Final video storyboard (~75 s)
 
+> **Update:** the shipped tour (`resources/paths/tour.txt`) is a ~44 s hyperbolic fly-by instead: a fast
+> approach, a close pass at 7.5M (~0.4c, hole kept centered, 100 degree FOV), then back out with the hole
+> still framed. The storyboard below is the original plan.
+
 | Time | Camera | What the audience sees / narration hook |
 |---|---|---|
 | 0–10 s | r ≈ 200M, drifting | Star field with a small dark spot; stars near it are doubled and smeared (lensing). |
