@@ -5,11 +5,20 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <string>
 
+#include "Camera.h"
 #include "Program.h"
+#include "Screenshot.h"
+#include "Texture.h"
+
+#ifndef BH_RESOURCE_DIR
+#define BH_RESOURCE_DIR "resources/"
+#endif
 
 static bool g_reloadRequested = false;
 
@@ -36,11 +45,23 @@ static void KeyCallback(GLFWwindow* window, int key, int scancode, int action, i
 
 int main(int argc, char** argv)
 {
-	// `--frames N` exits after N frames (used for automated smoke tests).
+	Camera camera;
+
+	// Command line (all optional, mostly for automated testing):
+	//   --frames N            exit after N frames
+	//   --screenshot FILE     render a few frames, save FILE (no GUI), exit
+	//   --cam X Y Z YAW PITCH start camera pose (degrees)
 	int maxFrames = -1;
+	std::string screenshotPath;
 	for (int i = 1; i < argc; i++) {
 		if (std::strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
 			maxFrames = std::atoi(argv[++i]);
+		} else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
+			screenshotPath = argv[++i];
+		} else if (std::strcmp(argv[i], "--cam") == 0 && i + 5 < argc) {
+			camera.position = glm::vec3(std::atof(argv[i + 1]), std::atof(argv[i + 2]), std::atof(argv[i + 3]));
+			camera.SetOrientation(static_cast<float>(std::atof(argv[i + 4])), static_cast<float>(std::atof(argv[i + 5])));
+			i += 5;
 		}
 	}
 
@@ -82,14 +103,30 @@ int main(int argc, char** argv)
 		std::cerr << "Initial shader build failed; fix the shader and press R." << std::endl;
 	}
 
+	// Optional equirectangular sky map. Without one we fall back to the procedural star field.
+	GLuint skyTex = LoadTexture2D(std::string(BH_RESOURCE_DIR) + "sky/sky.jpg");
+	if (!skyTex) skyTex = LoadTexture2D(std::string(BH_RESOURCE_DIR) + "sky/sky.png");
+	int skyMode = skyTex ? 1 : 0; // 0 = procedural, 1 = texture
+	float exposure = 1.0f;
+
 	// Core profile needs a VAO bound even when the vertex shader reads no attributes.
 	GLuint vao = 0;
 	glGenVertexArrays(1, &vao);
 	glBindVertexArray(vao);
 
+	bool mouseLook = false;
+	double lastX = 0.0, lastY = 0.0;
+	double lastTime = glfwGetTime();
 	int frame = 0;
+
 	while (!glfwWindowShouldClose(window)) {
 		glfwPollEvents();
+
+		double now = glfwGetTime();
+		float dt = static_cast<float>(std::min(now - lastTime, 0.1));
+		lastTime = now;
+
+		ImGuiIO& io = ImGui::GetIO();
 
 		if (g_reloadRequested) {
 			g_reloadRequested = false;
@@ -97,6 +134,30 @@ int main(int argc, char** argv)
 			if (program.Load()) {
 				std::cout << "Shaders reloaded." << std::endl;
 			}
+		}
+
+		// Hold the right mouse button to look around (cursor is hidden/locked while held).
+		bool rmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+		if (rmb && !mouseLook && !io.WantCaptureMouse) {
+			mouseLook = true;
+			glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+			if (glfwRawMouseMotionSupported()) {
+				glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+			}
+			glfwGetCursorPos(window, &lastX, &lastY);
+		} else if (!rmb && mouseLook) {
+			mouseLook = false;
+			glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+		}
+		if (mouseLook) {
+			double x, y;
+			glfwGetCursorPos(window, &x, &y);
+			camera.Rotate(static_cast<float>(x - lastX), static_cast<float>(y - lastY));
+			lastX = x;
+			lastY = y;
+		}
+		if (!io.WantCaptureKeyboard) {
+			camera.Update(window, dt);
 		}
 
 		int fbw, fbh;
@@ -110,18 +171,59 @@ int main(int argc, char** argv)
 
 		if (program.GetPID() != 0) {
 			program.Bind();
-			program.SendUniformData(static_cast<float>(glfwGetTime()), "uTime");
+			program.SendUniformData(glm::vec2(static_cast<float>(fbw), static_cast<float>(fbh)), "uResolution");
+			program.SendUniformData(camera.position, "uCamPos");
+			program.SendUniformData(camera.Right(), "uCamRight");
+			program.SendUniformData(camera.Up(), "uCamUp");
+			program.SendUniformData(camera.Forward(), "uCamForward");
+			program.SendUniformData(camera.TanHalfFov(), "uTanHalfFov");
+			program.SendUniformData(skyMode, "uSkyMode");
+			program.SendUniformData(exposure, "uExposure");
+			if (skyTex) {
+				glActiveTexture(GL_TEXTURE0);
+				glBindTexture(GL_TEXTURE_2D, skyTex);
+				program.SendUniformData(0, "uSky");
+			}
 			glDrawArrays(GL_TRIANGLES, 0, 3);
 			Program::Unbind();
+		}
+
+		// Screenshot mode: grab the scene (without the GUI) after a couple of warm-up frames.
+		if (!screenshotPath.empty() && ++frame >= 3) {
+			SaveScreenshot(screenshotPath, fbw, fbh);
+			break;
 		}
 
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 		ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+		ImGui::SetNextWindowSize(ImVec2(330, 0), ImGuiCond_FirstUseEver);
 		ImGui::Begin("Black Hole");
-		ImGui::Text("%.1f FPS (%.2f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
-		ImGui::Text("R: reload shaders   Esc: quit");
+		ImGui::Text("%.1f FPS (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
+		ImGui::TextDisabled("WASD/QE move, Shift fast, RMB-drag look");
+		ImGui::TextDisabled("R reload shaders, Esc quit");
+
+		if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Text("pos  %.1f %.1f %.1f", camera.position.x, camera.position.y, camera.position.z);
+			ImGui::Text("r = %.1f M   yaw %.0f  pitch %.0f", glm::length(camera.position), camera.YawDeg(), camera.PitchDeg());
+			ImGui::SliderFloat("FOV", &camera.fovDeg, 20.f, 120.f, "%.0f deg");
+			ImGui::SliderFloat("Speed", &camera.baseSpeed, 1.f, 100.f, "%.0f", ImGuiSliderFlags_Logarithmic);
+			if (ImGui::Button("Reset camera")) {
+				camera.Reset();
+			}
+		}
+		if (ImGui::CollapsingHeader("Sky", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::RadioButton("Procedural stars", &skyMode, 0);
+			if (!skyTex) ImGui::BeginDisabled();
+			ImGui::SameLine();
+			ImGui::RadioButton("Texture", &skyMode, 1);
+			if (!skyTex) {
+				ImGui::EndDisabled();
+				ImGui::TextDisabled("(add resources/sky/sky.jpg for a texture)");
+			}
+			ImGui::SliderFloat("Exposure", &exposure, 0.1f, 4.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+		}
 		if (!program.GetLog().empty()) {
 			ImGui::Separator();
 			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Shader error (showing last good shader):");
@@ -139,6 +241,7 @@ int main(int argc, char** argv)
 	}
 
 	glDeleteVertexArrays(1, &vao);
+	if (skyTex) glDeleteTextures(1, &skyTex);
 	ImGui_ImplOpenGL3_Shutdown();
 	ImGui_ImplGlfw_Shutdown();
 	ImGui::DestroyContext();

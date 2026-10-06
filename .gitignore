@@ -2,6 +2,10 @@ build/
 out/
 .vs/
 *.user
-*.png
-!resources/**/*.png
 renders/
+
+# Screenshots / big image assets (sky maps are not committed, see resources/sky/README.md)
+*.png
+*.jpg
+*.jpeg
+*.hdr
