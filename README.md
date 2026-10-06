@@ -3,12 +3,13 @@
 Real-time OpenGL black hole fly-through (Schwarzschild lensing + accretion disk) for an
 intro astronomy class. See [PLAN.md](PLAN.md) for the design and milestones.
 
-**Status:** M0-M7 done (window + shader hot-reload, free-fly camera, procedural/texture sky,
+**Status:** M0-M8 done: everything in PLAN.md except the optional M9 stretch goals (window + shader hot-reload,
 Schwarzschild lensing with a validated integrator, accretion disk with physical shading:
 temperature profile, Doppler + gravitational redshift, beaming, blackbody colors, sheared
 turbulent disk animated by Keplerian differential rotation, HDR pipeline with bloom + ACES
-tonemapping + supersampling, keyframed camera paths, moving observers with aberration, HUD).
-Next: M8 (recording the final video).
+free-fly camera with roll, procedural/texture sky, lensing with a validated integrator, physical accretion disk,
+HDR bloom + tonemapping, keyframed camera paths, moving observers with aberration, HUD, and offline
+recording to mp4).
 
 ## Build (Windows, Visual Studio 2022)
 
@@ -86,3 +87,24 @@ The *Observer* panel chooses how the camera moves relative to a hovering observe
 a circular orbit, or along the view direction. Motion gives relativistic aberration (the sky bunches up
 ahead) and a Doppler shift of everything seen. The *boost* (keyframed) scales that motion from 0 to full speed.
 `--observer N --boost B --pathtime T --hud --panel --savepath FILE` are handy for scripted renders.
+
+## Recording the video
+
+Offline rendering uses a fixed time step per frame, 2x2 supersampling and 800 ray steps by default, so
+the result does not depend on how fast your machine is. The mp4 is encoded with Windows' built-in H.264
+encoder (GPU-accelerated where available); no ffmpeg needed.
+
+```powershell
+# the full 75 s tour at 1080p60 with the HUD (about 2 minutes, ~350 MB; renders\ is git-ignored)
+.\build\Release\BlackHole.exe --tour --record renders\blackhole_tour.mp4 --size 1920 1080 --hud
+
+# your own path, 4K, a time range, no HUD
+.\build\Release\BlackHole.exe --path resources\paths\mine.txt --record renders\mine.mp4 --size 3840 2160 --range 10 40
+
+# lossless PNG sequence instead (large: several GB), then optionally tools\make_video.ps1
+.\build\Release\BlackHole.exe --tour --recordpng renders\frames --size 1920 1080
+```
+
+Options: `--fps N` (60), `--bitrate MBPS` (40), `--steps N` (800), `--scale S` (2 = supersampling),
+`--fade S` / `--fadein S` (1.5 / 0.5 s), `--range A B`, `--simspeed X` (disk animation speed, M per second
+of path time), `--hud`. A 1080p frame takes ~25 ms (supersampled, including encoding).

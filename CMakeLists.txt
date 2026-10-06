@@ -86,6 +86,8 @@ IF(WIN32)
 	# Disable warning 4996.
 	SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4996")
 	TARGET_LINK_LIBRARIES(${CMAKE_PROJECT_NAME} opengl32.lib)
+	# Windows Media Foundation: used by VideoWriter for built-in H.264 .mp4 export (no ffmpeg needed).
+	TARGET_LINK_LIBRARIES(${CMAKE_PROJECT_NAME} mfplat.lib mfreadwrite.lib mfuuid.lib ole32.lib)
 	SET_PROPERTY(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${CMAKE_PROJECT_NAME})
 ELSE()
 	# Enable all pedantic warnings.

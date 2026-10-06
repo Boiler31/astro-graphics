@@ -11,6 +11,7 @@ uniform sampler2D uScene;
 uniform sampler2D uBloom;
 uniform float uExposure;
 uniform float uBloomStrength;
+uniform float uFade; // 1 = normal, 0 = black (fade in / out when recording)
 
 // Narkowicz's fit of the ACES filmic curve (input: linear, output: ~display-linear 0..1).
 vec3 acesFilm(vec3 x)
@@ -38,5 +39,5 @@ void main()
 	vec3 ldr = srgbEncode(acesFilm(hdr * uExposure));
 	// +-0.5/255 triangular dither hides banding in the dark gradients around the hole.
 	float dither = hash12(gl_FragCoord.xy) + hash12(gl_FragCoord.xy + 17.0) - 1.0;
-	fragColor = vec4(ldr + dither / 255.0, 1.0);
+	fragColor = vec4((ldr + dither / 255.0) * uFade, 1.0);
 }

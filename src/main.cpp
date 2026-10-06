@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <string>
 
@@ -20,6 +21,7 @@
 #include "Geodesic.h"
 #include "Observer.h"
 #include "Program.h"
+#include "VideoWriter.h"
 #include "Screenshot.h"
 #include "Texture.h"
 
@@ -94,12 +96,24 @@ int main(int argc, char** argv)
 	//   --savepath FILE       write the loaded path (e.g. with --tour) to FILE and exit
 	//   --hud                 show the HUD (also in screenshots)
 	//   --panel               show the control panel in screenshots
+	//   --record FILE.mp4     render the loaded path offline (fixed time step, supersampled) to an H.264 mp4
+	//   --recordpng DIR       same, but write a PNG sequence frame_00000.png ...
+	//   --fps N               recording frame rate (default 60)
+	//   --bitrate MBPS        mp4 bitrate in Mbit/s (default 40)
+	//   --steps N             ray step budget (default 400 interactive, 800 when recording)
+	//   --fade S / --fadein S fade-out / fade-in length in seconds when recording (default 1.5 / 0.5)
+	//   --range A B           record only path times A..B seconds
+	//   --simspeed X          disk animation speed in M per second of path time
 	std::string fxLetters = "gtdcb";
 	int startObserver = 0;
 	float startBoost = 0.f;
 	bool startTour = false, startHud = false, startPanel = false;
 	std::string startPathFile, savePathFile;
 	float startPathTime = -1.f;
+	std::string recordFile, recordPngDir;
+	int recFps = 60, startSteps = -1;
+	float recBitrate = 40.f, recFade = 1.5f, recFadeIn = 0.5f, recFrom = 0.f, recTo = -1.f, startSimSpeed = -1.f;
+	bool scaleGiven = false;
 	bool startChecker = false;
 	float startTPeak = -1.f, startBright = -1.f, startBeamExp = -1.f, startTurb = -1.f;
 	float startTime = 0.f;
@@ -133,6 +147,26 @@ int main(int argc, char** argv)
 			savePathFile = argv[++i];
 		} else if (std::strcmp(argv[i], "--pathtime") == 0 && i + 1 < argc) {
 			startPathTime = static_cast<float>(std::atof(argv[++i]));
+		} else if (std::strcmp(argv[i], "--record") == 0 && i + 1 < argc) {
+			recordFile = argv[++i];
+		} else if (std::strcmp(argv[i], "--recordpng") == 0 && i + 1 < argc) {
+			recordPngDir = argv[++i];
+		} else if (std::strcmp(argv[i], "--fps") == 0 && i + 1 < argc) {
+			recFps = std::max(1, std::atoi(argv[++i]));
+		} else if (std::strcmp(argv[i], "--bitrate") == 0 && i + 1 < argc) {
+			recBitrate = static_cast<float>(std::atof(argv[++i]));
+		} else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 < argc) {
+			startSteps = std::atoi(argv[++i]);
+		} else if (std::strcmp(argv[i], "--fade") == 0 && i + 1 < argc) {
+			recFade = static_cast<float>(std::atof(argv[++i]));
+		} else if (std::strcmp(argv[i], "--fadein") == 0 && i + 1 < argc) {
+			recFadeIn = static_cast<float>(std::atof(argv[++i]));
+		} else if (std::strcmp(argv[i], "--range") == 0 && i + 2 < argc) {
+			recFrom = static_cast<float>(std::atof(argv[i + 1]));
+			recTo = static_cast<float>(std::atof(argv[i + 2]));
+			i += 2;
+		} else if (std::strcmp(argv[i], "--simspeed") == 0 && i + 1 < argc) {
+			startSimSpeed = static_cast<float>(std::atof(argv[++i]));
 		} else if (std::strcmp(argv[i], "--hud") == 0) {
 			startHud = true;
 		} else if (std::strcmp(argv[i], "--panel") == 0) {
@@ -143,6 +177,7 @@ int main(int argc, char** argv)
 			startBeamExp = static_cast<float>(std::atof(argv[++i]));
 		} else if (std::strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
 			startScale = static_cast<float>(std::atof(argv[++i]));
+			scaleGiven = true;
 		} else if (std::strcmp(argv[i], "--exposure") == 0 && i + 1 < argc) {
 			startExposure = static_cast<float>(std::atof(argv[++i]));
 		} else if (std::strcmp(argv[i], "--bloom") == 0 && i + 1 < argc) {
@@ -180,7 +215,12 @@ int main(int argc, char** argv)
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 
-	GLFWwindow* window = glfwCreateWindow(winW, winH, "Black Hole", nullptr, nullptr);
+	const bool recording = !recordFile.empty() || !recordPngDir.empty();
+	if (recording) {
+		glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+	}
+	GLFWwindow* window = recording ? glfwCreateWindow(64, 64, "Black Hole (recording)", nullptr, nullptr)
+	                               : glfwCreateWindow(winW, winH, "Black Hole", nullptr, nullptr);
 	if (!window) {
 		glfwTerminate();
 		return -1;
@@ -317,6 +357,45 @@ int main(int argc, char** argv)
 	glGenVertexArrays(1, &vao);
 	glBindVertexArray(vao);
 
+	// Offline recording: the loop below runs with a fixed time step per frame, no input, and an
+	// offscreen output buffer of the requested size, so results do not depend on machine speed.
+	Framebuffer recFbo;
+	VideoWriter video;
+	std::vector<unsigned char> recPixels;
+	int recW = 0, recH = 0, recTotal = 0, recFrame = 0;
+	float recStart = 0.f, recEnd = 0.f;
+	if (startSimSpeed >= 0.f) simSpeed = startSimSpeed;
+	if (startSteps > 0) maxSteps = startSteps;
+	if (recording) {
+		if (path.keys.empty()) {
+			std::cerr << "Nothing to record: load a camera path with --tour or --path FILE." << std::endl;
+			glfwTerminate();
+			return 1;
+		}
+		recW = winW & ~1; // H.264 needs even dimensions
+		recH = winH & ~1;
+		recStart = std::clamp(recFrom, 0.f, path.Duration());
+		recEnd = recTo > 0.f ? std::min(recTo, path.Duration()) : path.Duration();
+		recTotal = std::max(1, static_cast<int>(std::ceil((recEnd - recStart) * recFps)) + 1);
+		if (startSteps <= 0) maxSteps = 800; // quality over speed
+		if (!scaleGiven) renderScale = 2.f;  // 2x2 supersampling
+		simRunning = false;
+		pathPlaying = false;
+		showPanel = false;
+		recFbo.Resize(recW, recH);
+		if (!recordFile.empty() && !video.Open(recordFile, recW, recH, recFps, static_cast<int>(recBitrate * 1000.f))) {
+			glfwTerminate();
+			return 1;
+		}
+		if (!recordPngDir.empty()) {
+			std::filesystem::create_directories(recordPngDir);
+		}
+		std::cout << "Recording " << recTotal << " frames of " << recW << "x" << recH << " (" << recStart << "s to " << recEnd
+		          << "s at " << recFps << " fps, internal " << renderScale << "x, " << maxSteps << " steps) to "
+		          << (recordFile.empty() ? recordPngDir : recordFile) << std::endl;
+	}
+	const double recordWallStart = glfwGetTime();
+
 	bool mouseLook = false;
 	double lastX = 0.0, lastY = 0.0;
 	double lastTime = glfwGetTime();
@@ -331,7 +410,19 @@ int main(int argc, char** argv)
 		lastTime = now;
 
 		ImGuiIO& io = ImGui::GetIO();
-		if (simRunning) {
+		float fade = 1.f; // fade in / out, recording only
+		if (recording) {
+			if (recFrame >= recTotal) {
+				break;
+			}
+			const float t = std::min(recStart + static_cast<float>(recFrame) / recFps, recEnd);
+			pathTime = t;
+			applyKeyframe(path.Sample(t));
+			simTime = static_cast<double>(t) * simSpeed;
+			auto smooth = [](float x) { x = std::clamp(x, 0.f, 1.f); return x * x * (3.f - 2.f * x); };
+			if (recFadeIn > 0.f) fade = std::min(fade, smooth((t - recStart) / recFadeIn));
+			if (recFade > 0.f) fade = std::min(fade, smooth((recEnd - t) / recFade));
+		} else if (simRunning) {
 			simTime += dt * simSpeed;
 		}
 
@@ -428,6 +519,10 @@ int main(int argc, char** argv)
 
 		int fbw, fbh;
 		glfwGetFramebufferSize(window, &fbw, &fbh);
+		if (recording) {
+			fbw = recW; // render to the offscreen recording buffer, not the (hidden) window
+			fbh = recH;
+		}
 		if (fbw == 0 || fbh == 0) {
 			continue; // minimized
 		}
@@ -491,8 +586,12 @@ int main(int argc, char** argv)
 
 		// 3. Tonemap (+ bloom) to the screen. The linear filter on the scene texture resamples
 		// it when the internal scale is not 1.
-		glBindFramebuffer(GL_FRAMEBUFFER, 0);
-		glViewport(0, 0, fbw, fbh);
+		if (recording) {
+			recFbo.Bind();
+		} else {
+			glBindFramebuffer(GL_FRAMEBUFFER, 0);
+			glViewport(0, 0, fbw, fbh);
+		}
 		if (tonemap.GetPID() != 0) {
 			tonemap.Bind();
 			glActiveTexture(GL_TEXTURE0);
@@ -503,12 +602,19 @@ int main(int argc, char** argv)
 			tonemap.SendUniformData(1, "uBloom");
 			tonemap.SendUniformData(exposure, "uExposure");
 			tonemap.SendUniformData(bloomStrength, "uBloomStrength");
+			tonemap.SendUniformData(fade, "uFade");
 			glDrawArrays(GL_TRIANGLES, 0, 3);
 			Program::Unbind();
 		}
 
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
+		if (recording) {
+			// The GUI (HUD) draws into the offscreen buffer, so size it to that, and fade it with the scene.
+			io.DisplaySize = ImVec2(static_cast<float>(recW), static_cast<float>(recH));
+			io.DisplayFramebufferScale = ImVec2(1.f, 1.f);
+		}
+		ImGui::GetStyle().Alpha = fade;
 		ImGui::NewFrame();
 		if (showPanel) {
 		ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
@@ -716,7 +822,7 @@ int main(int argc, char** argv)
 			ImGui::Begin("##hud", nullptr,
 			             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
 			                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs);
-			ImGui::SetWindowFontScale(1.4f);
+			ImGui::SetWindowFontScale(1.4f * std::max(io.DisplaySize.y, 360.f) / 720.f); // scales with resolution
 			ImGui::Text("distance   %.1f M   (%s from a %.0f Msun hole)", r, dist, bhMassSolar);
 			ImGui::Text("clock rate %.3f   1 hour here = %.2f hours far away", rate, rate > 1e-6 ? 1.0 / rate : 0.0);
 			if (beta > 0.001) {
@@ -727,6 +833,31 @@ int main(int argc, char** argv)
 
 		ImGui::Render();
 		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+		// Recording: grab the finished frame (still bound) and send it to the encoder / PNG sequence.
+		if (recording) {
+			bool ok = ReadFramebufferRgb(recW, recH, recPixels);
+			if (ok && !recordFile.empty()) {
+				ok = video.AddFrame(recPixels.data());
+			}
+			if (ok && !recordPngDir.empty()) {
+				char name[64];
+				std::snprintf(name, sizeof(name), "/frame_%05d.png", recFrame);
+				ok = SavePng(recordPngDir + name, recW, recH, recPixels);
+			}
+			if (!ok) {
+				std::cerr << "Recording failed at frame " << recFrame << std::endl;
+				break;
+			}
+			recFrame++;
+			if (recFrame % 30 == 0 || recFrame == recTotal) {
+				double secs = glfwGetTime() - recordWallStart;
+				double perFrame = secs / recFrame;
+				std::cout << "frame " << recFrame << "/" << recTotal << "  (" << perFrame * 1000.0 << " ms/frame, ~"
+				          << perFrame * (recTotal - recFrame) << " s left)" << std::endl;
+			}
+			continue; // no swap, no vsync wait
+		}
 
 		// Screenshot mode: grab the frame (scene + whatever GUI is enabled) after a few warm-up frames.
 		if (!screenshotPath.empty() && ++frame >= 3) {
@@ -743,6 +874,12 @@ int main(int argc, char** argv)
 			          << 1000.0 * secs / frame << " ms/frame, " << frame / secs << " fps)" << std::endl;
 			break;
 		}
+	}
+
+	if (recording) {
+		bool closed = video.Close(); // finalizes the mp4 (writes the index), must happen before exit
+		std::cout << (recFrame >= recTotal && closed ? "Done: " : "Stopped early: ") << recFrame << " frames in "
+		          << glfwGetTime() - recordWallStart << " s" << std::endl;
 	}
 
 	glDeleteVertexArrays(1, &vao);
