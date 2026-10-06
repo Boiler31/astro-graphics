@@ -7,9 +7,11 @@
 
 void Camera::Reset()
 {
-	position = glm::vec3(0.f, 0.f, 50.f);
+	// 50M from the hole, 10 degrees above the disk plane (y = 0), looking at the hole.
+	const float r = 50.f, elevation = glm::radians(10.f);
+	position = glm::vec3(0.f, r * std::sin(elevation), r * std::cos(elevation));
 	yaw = -90.f;
-	pitch = 0.f;
+	pitch = -10.f;
 	fovDeg = 60.f;
 }
 

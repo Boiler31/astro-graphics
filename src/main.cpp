@@ -131,6 +131,11 @@ int main(int argc, char** argv)
 	float stepScale = 0.25f;
 	const float kMinCameraRadius = 2.1f; // keep the static observer outside the horizon
 
+	// Accretion disk (thin, in the y = 0 plane; inner edge fixed at the ISCO, 6M).
+	bool diskEnabled = true;
+	float diskOuter = 25.f;
+	float diskOpacity = 0.85f;
+
 	// Core profile needs a VAO bound even when the vertex shader reads no attributes.
 	GLuint vao = 0;
 	glGenVertexArrays(1, &vao);
@@ -211,6 +216,9 @@ int main(int argc, char** argv)
 			program.SendUniformData(lensing ? 1 : 0, "uGR");
 			program.SendUniformData(maxSteps, "uMaxSteps");
 			program.SendUniformData(stepScale, "uStepScale");
+			program.SendUniformData(diskEnabled ? 1 : 0, "uDisk");
+			program.SendUniformData(diskOuter, "uDiskOuter");
+			program.SendUniformData(diskOpacity, "uDiskOpacity");
 			if (skyTex) {
 				glActiveTexture(GL_TEXTURE0);
 				glBindTexture(GL_TEXTURE_2D, skyTex);
@@ -256,6 +264,12 @@ int main(int argc, char** argv)
 				ImGui::Text("Shadow radius: %.2f deg (%.0f px)", glm::degrees(alpha), pixels);
 				ImGui::TextDisabled("sin(a) = 3*sqrt(3)*M/r * sqrt(1-2M/r)");
 			}
+		}
+		if (ImGui::CollapsingHeader("Accretion disk", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Checkbox("Show disk", &diskEnabled);
+			ImGui::SliderFloat("Outer radius (M)", &diskOuter, 8.f, 60.f, "%.0f");
+			ImGui::SliderFloat("Opacity", &diskOpacity, 0.05f, 1.f, "%.2f");
+			ImGui::TextDisabled("inner edge = ISCO = 6M (needs lensing on)");
 		}
 		if (ImGui::CollapsingHeader("Sky", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::RadioButton("Procedural stars", &skyMode, 0);

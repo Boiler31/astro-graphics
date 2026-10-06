@@ -2,10 +2,12 @@
 
 #include "sky.glsl"
 #include "geodesic.glsl"
+#include "disk.glsl"
 
-// M2: Schwarzschild lensing. Every pixel's camera ray is marched along the bent light path
-// around the black hole (at the origin) until it falls in (black) or escapes (sky lookup by the
-// final direction). The accretion disk joins the loop in M3.
+// Schwarzschild black hole renderer. Every pixel's camera ray is marched along the bent light
+// path around the black hole (at the origin) until it falls in (black) or escapes (sky lookup by
+// the final direction). On the way it can cross the accretion disk (the y = 0 plane), possibly
+// several times: the extra crossings are the lensed images of the disk's far side.
 in vec2 vUV;
 out vec4 fragColor;
 
@@ -21,6 +23,7 @@ uniform float uExposure;
 uniform int uGR;         // 1 = bend light around the black hole, 0 = straight rays
 uniform int uMaxSteps;   // integration step budget per ray
 uniform float uStepScale; // dt = uStepScale * (r - 2M)
+uniform int uDisk;       // 1 = draw the accretion disk
 
 void main()
 {
@@ -33,6 +36,8 @@ void main()
 
 	vec3 dir = rayDir;
 	bool captured = false;
+	vec3 diskColor = vec3(0.0); // light picked up from the disk along the ray
+	float transmittance = 1.0;  // fraction of background light that still gets through
 
 	if (uGR == 1) {
 		vec3 x = uCamPos;
@@ -54,7 +59,24 @@ void main()
 			} else if (r > rFar && dot(x, v) > 0.0) {
 				done = true; // escaped; v is now the asymptotic direction
 			} else {
-				rk4Step(x, v, h2, uStepScale * (r - R_HORIZON));
+				vec3 x0 = x, v0 = v;
+				float dt = uStepScale * (r - R_HORIZON);
+				rk4Step(x, v, h2, dt);
+
+				// Did this step cross the disk plane?
+				if (uDisk == 1 && x0.y * x.y < 0.0) {
+					float s = x0.y / (x0.y - x.y);
+					vec3 p = hermiteSegment(x0, v0, x, v, dt, s);
+					float rd = length(p.xz);
+					if (rd > R_ISCO && rd < uDiskOuter) {
+						vec4 e = diskShade(rd, atan(p.z, p.x));
+						diskColor += transmittance * e.a * e.rgb;
+						transmittance *= 1.0 - e.a;
+						if (transmittance < 0.01) {
+							done = true; // effectively opaque: nothing behind it is visible
+						}
+					}
+				}
 			}
 		}
 		if (!done) {
@@ -72,9 +94,10 @@ void main()
 		footprint = clamp(max(length(dFdx(dir)), length(dFdy(dir))), pixAngle, 24.0 * pixAngle);
 	}
 
-	vec3 col = vec3(0.0);
-	if (!captured) {
-		col = (uSkyMode == 1) ? textureSky(dir) : proceduralSky(dir, footprint);
+	vec3 col = diskColor;
+	if (!captured && transmittance > 0.01) {
+		vec3 sky = (uSkyMode == 1) ? textureSky(dir) : proceduralSky(dir, footprint);
+		col += transmittance * sky;
 	}
 	fragColor = vec4(col * uExposure, 1.0);
 }
