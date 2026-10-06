@@ -70,6 +70,7 @@ int main(int argc, char** argv)
 	//   --frames N            exit after N frames
 	//   --screenshot FILE     render a few frames, save FILE (no GUI), exit
 	//   --cam X Y Z YAW PITCH start camera pose (degrees)
+	//   --roll DEG            start roll about the view direction
 	//   --nogr                start with light bending off (straight rays)
 	//   --novsync             disable vsync (use with --frames to benchmark)
 	//   --size W H            window size (default 1280 720)
@@ -161,6 +162,8 @@ int main(int argc, char** argv)
 			i += 2;
 		} else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
 			screenshotPath = argv[++i];
+		} else if (std::strcmp(argv[i], "--roll") == 0 && i + 1 < argc) {
+			camera.rollDeg = static_cast<float>(std::atof(argv[++i]));
 		} else if (std::strcmp(argv[i], "--cam") == 0 && i + 5 < argc) {
 			camera.position = glm::vec3(std::atof(argv[i + 1]), std::atof(argv[i + 2]), std::atof(argv[i + 3]));
 			camera.SetOrientation(static_cast<float>(std::atof(argv[i + 4])), static_cast<float>(std::atof(argv[i + 5])));
@@ -275,6 +278,7 @@ int main(int argc, char** argv)
 		camera.position = k.position;
 		camera.SetOrientation(k.yaw, k.pitch);
 		camera.fovDeg = k.fov;
+		camera.rollDeg = k.roll;
 		observerBoost = k.boost;
 	};
 	auto loadTour = [&]() {
@@ -367,6 +371,7 @@ int main(int argc, char** argv)
 			k.pitch = camera.PitchDeg();
 			k.fov = camera.fovDeg;
 			k.boost = observerBoost;
+			k.roll = camera.rollDeg;
 			selectedKey = path.Add(k);
 		}
 
@@ -518,6 +523,8 @@ int main(int argc, char** argv)
 			ImGui::Text("pos  %.1f %.1f %.1f", camera.position.x, camera.position.y, camera.position.z);
 			ImGui::Text("r = %.1f M   yaw %.0f  pitch %.0f", glm::length(camera.position), camera.YawDeg(), camera.PitchDeg());
 			ImGui::SliderFloat("FOV", &camera.fovDeg, 20.f, 120.f, "%.0f deg");
+			ImGui::SliderFloat("Roll", &camera.rollDeg, -180.f, 180.f, "%.0f deg");
+			ImGui::TextDisabled("Z / C roll, X levels the horizon");
 			ImGui::SliderFloat("Speed", &camera.baseSpeed, 1.f, 100.f, "%.0f", ImGuiSliderFlags_Logarithmic);
 			if (ImGui::Button("Reset camera")) {
 				camera.Reset();
@@ -580,6 +587,7 @@ int main(int argc, char** argv)
 					k.pitch = camera.PitchDeg();
 					k.fov = camera.fovDeg;
 					k.boost = observerBoost;
+					k.roll = camera.rollDeg;
 					path.Normalize();
 				}
 				ImGui::SameLine();

@@ -11,6 +11,7 @@ public:
 	glm::vec3 position = glm::vec3(0.f, 0.f, 50.f);
 	float fovDeg = 60.f;   // vertical field of view
 	float baseSpeed = 10.f; // M per second at distance ~ 30M (scaled with distance, see Update)
+	float rollDeg = 0.f;   // rotation about the viewing direction (positive = clockwise as seen by the camera)
 
 	Camera() { Reset(); }
 	void Reset();
@@ -26,7 +27,7 @@ public:
 
 	// Mouse-look: dx/dy in pixels of cursor movement.
 	void Rotate(float dx, float dy);
-	// WASD move, Q/E down/up, Shift = 4x speed.
+	// WASD move, Q/E down/up, Z/C roll left/right (X levels the horizon), Shift = 4x speed.
 	void Update(GLFWwindow* window, float dt);
 
 private:

@@ -12,6 +12,7 @@ void Camera::Reset()
 	position = glm::vec3(0.f, r * std::sin(elevation), r * std::cos(elevation));
 	yaw = -90.f;
 	pitch = -10.f;
+	rollDeg = 0.f;
 	fovDeg = 60.f;
 }
 
@@ -21,14 +22,23 @@ glm::vec3 Camera::Forward() const
 	return glm::normalize(glm::vec3(std::cos(p) * std::cos(y), std::sin(p), std::cos(p) * std::sin(y)));
 }
 
+// Right/up of the un-rolled camera (horizon level), then rotated about the view direction.
 glm::vec3 Camera::Right() const
 {
-	return glm::normalize(glm::cross(Forward(), glm::vec3(0.f, 1.f, 0.f)));
+	glm::vec3 f = Forward();
+	glm::vec3 r0 = glm::normalize(glm::cross(f, glm::vec3(0.f, 1.f, 0.f)));
+	glm::vec3 u0 = glm::cross(r0, f);
+	float a = glm::radians(rollDeg);
+	return r0 * std::cos(a) - u0 * std::sin(a);
 }
 
 glm::vec3 Camera::Up() const
 {
-	return glm::cross(Right(), Forward());
+	glm::vec3 f = Forward();
+	glm::vec3 r0 = glm::normalize(glm::cross(f, glm::vec3(0.f, 1.f, 0.f)));
+	glm::vec3 u0 = glm::cross(r0, f);
+	float a = glm::radians(rollDeg);
+	return r0 * std::sin(a) + u0 * std::cos(a);
 }
 
 float Camera::TanHalfFov() const
@@ -57,6 +67,13 @@ void Camera::Update(GLFWwindow* window, float dt)
 	if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
 		speed *= 4.f;
 	}
+
+	// Roll: Z / C turn the view counter-clockwise / clockwise, X levels the horizon again.
+	const float rollRate = 45.f; // degrees per second
+	if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS) rollDeg -= rollRate * dt;
+	if (glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS) rollDeg += rollRate * dt;
+	if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS) rollDeg = 0.f;
+	rollDeg = std::remainder(rollDeg, 360.f); // keep in [-180, 180]
 
 	glm::vec3 move(0.f);
 	if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) move += Forward();

@@ -13,6 +13,7 @@ struct Keyframe
 	float pitch = 0.f;   // degrees
 	float fov = 60.f;    // degrees
 	float boost = 0.f;
+	float roll = 0.f;    // degrees about the view direction (unwrapped along the path)
 };
 
 // A smooth camera flight through keyframes: every channel (position, yaw, pitch, fov, boost) is

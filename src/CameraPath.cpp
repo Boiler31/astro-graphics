@@ -9,11 +9,11 @@
 
 namespace
 {
-constexpr int kChannels = 7; // x y z yaw pitch fov boost
+constexpr int kChannels = 8; // x y z yaw pitch fov boost roll
 
 std::array<float, kChannels> Pack(const Keyframe& k)
 {
-	return {k.position.x, k.position.y, k.position.z, k.yaw, k.pitch, k.fov, k.boost};
+	return {k.position.x, k.position.y, k.position.z, k.yaw, k.pitch, k.fov, k.boost, k.roll};
 }
 
 Keyframe Unpack(const std::array<float, kChannels>& v, float t)
@@ -25,6 +25,7 @@ Keyframe Unpack(const std::array<float, kChannels>& v, float t)
 	k.pitch = std::clamp(v[4], -89.f, 89.f);
 	k.fov = std::clamp(v[5], 10.f, 150.f);
 	k.boost = std::clamp(v[6], 0.f, 1.f);
+	k.roll = v[7];
 	return k;
 }
 } // namespace
@@ -61,6 +62,8 @@ void CameraPath::Normalize()
 		// Unwrap yaw so interpolation takes the short way around.
 		while (keys[i].yaw - keys[i - 1].yaw > 180.f) keys[i].yaw -= 360.f;
 		while (keys[i].yaw - keys[i - 1].yaw < -180.f) keys[i].yaw += 360.f;
+		while (keys[i].roll - keys[i - 1].roll > 180.f) keys[i].roll -= 360.f;
+		while (keys[i].roll - keys[i - 1].roll < -180.f) keys[i].roll += 360.f;
 	}
 }
 
@@ -114,11 +117,11 @@ bool CameraPath::Save(const std::string& file, int observerModel) const
 		std::cerr << "Cannot write " << file << std::endl;
 		return false;
 	}
-	out << "# camera path v1: key time x y z yaw pitch fov boost\n";
+	out << "# camera path v1: key time x y z yaw pitch fov boost [roll]\n";
 	out << "observer " << observerModel << "\n";
 	for (const Keyframe& k : keys) {
 		out << "key " << k.time << " " << k.position.x << " " << k.position.y << " " << k.position.z << " " << k.yaw
-		    << " " << k.pitch << " " << k.fov << " " << k.boost << "\n";
+		    << " " << k.pitch << " " << k.fov << " " << k.boost << " " << k.roll << "\n";
 	}
 	return true;
 }
@@ -143,7 +146,11 @@ bool CameraPath::Load(const std::string& file, int* observerModel)
 		} else if (tag == "key") {
 			Keyframe k;
 			ss >> k.time >> k.position.x >> k.position.y >> k.position.z >> k.yaw >> k.pitch >> k.fov >> k.boost;
-			if (ss) loaded.push_back(k);
+			if (ss) {
+				float r = 0.f;
+				if (ss >> r) k.roll = r; // roll is optional (older files omit it)
+				loaded.push_back(k);
+			}
 		}
 	}
 	keys = loaded;

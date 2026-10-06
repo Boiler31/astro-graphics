@@ -50,6 +50,7 @@ the shadow size sin(a) = 3*sqrt(3) M/r * sqrt(1-2M/r) at several camera distance
 |---|---|
 | W A S D | Move forward / left / back / right |
 | Q / E | Move down / up |
+| Z / C / X | Roll left / right / level the horizon (keyframed too) |
 | Shift | 4x faster (speed also scales with distance from the origin) |
 | Right mouse drag | Look around |
 | Space | Play / pause the camera path |
