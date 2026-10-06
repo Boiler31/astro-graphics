@@ -103,6 +103,7 @@ int main(int argc, char** argv)
 	//   --steps N             ray step budget (default 400 interactive, 800 when recording)
 	//   --fade S / --fadein S fade-out / fade-in length in seconds when recording (default 1.5 / 0.5)
 	//   --range A B           record only path times A..B seconds
+	//   --autorender          start the in-app (panel) render immediately, then quit (for testing)
 	//   --simspeed X          disk animation speed in M per second of path time
 	std::string fxLetters = "gtdcb";
 	int startObserver = 0;
@@ -113,7 +114,7 @@ int main(int argc, char** argv)
 	std::string recordFile, recordPngDir;
 	int recFps = 60, startSteps = -1;
 	float recBitrate = 40.f, recFade = 1.5f, recFadeIn = 0.5f, recFrom = 0.f, recTo = -1.f, startSimSpeed = -1.f;
-	bool scaleGiven = false;
+	bool scaleGiven = false, autoRender = false;
 	bool startChecker = false;
 	float startTPeak = -1.f, startBright = -1.f, startBeamExp = -1.f, startTurb = -1.f;
 	float startTime = 0.f;
@@ -167,6 +168,8 @@ int main(int argc, char** argv)
 			i += 2;
 		} else if (std::strcmp(argv[i], "--simspeed") == 0 && i + 1 < argc) {
 			startSimSpeed = static_cast<float>(std::atof(argv[++i]));
+		} else if (std::strcmp(argv[i], "--autorender") == 0) {
+			autoRender = true;
 		} else if (std::strcmp(argv[i], "--hud") == 0) {
 			startHud = true;
 		} else if (std::strcmp(argv[i], "--panel") == 0) {
@@ -215,11 +218,12 @@ int main(int argc, char** argv)
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 
-	const bool recording = !recordFile.empty() || !recordPngDir.empty();
-	if (recording) {
+	const bool cliRecording = !recordFile.empty() || !recordPngDir.empty(); // started from the command line
+	bool recording = cliRecording;                                          // a render is in progress (CLI or button)
+	if (cliRecording) {
 		glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 	}
-	GLFWwindow* window = recording ? glfwCreateWindow(64, 64, "Black Hole (recording)", nullptr, nullptr)
+	GLFWwindow* window = cliRecording ? glfwCreateWindow(64, 64, "Black Hole (recording)", nullptr, nullptr)
 	                               : glfwCreateWindow(winW, winH, "Black Hole", nullptr, nullptr);
 	if (!window) {
 		glfwTerminate();
@@ -309,7 +313,14 @@ int main(int argc, char** argv)
 	bool pathPlaying = false, pathLoop = false;
 	float pathTime = 0.f;
 	int selectedKey = -1;
-	char pathFile[256] = "resources/paths/tour.txt";
+	// Default file locations are absolute (derived from the source tree), so they work no matter
+	// which folder the exe is started from.
+	const std::string projectRoot =
+	    std::filesystem::weakly_canonical(std::filesystem::path(BH_RESOURCE_DIR) / "..").generic_string();
+	const std::string defaultMp4 = projectRoot + "/renders/blackhole.mp4";
+	const std::string defaultPngDir = projectRoot + "/renders/frames";
+	char pathFile[512];
+	std::snprintf(pathFile, sizeof(pathFile), "%spaths/mine.txt", BH_RESOURCE_DIR);
 	bool showHud = startHud;
 	bool showPanel = screenshotPath.empty() || startPanel;
 	float bhMassSolar = 10.f; // only used to translate M into kilometres on the HUD
@@ -370,44 +381,121 @@ int main(int argc, char** argv)
 	glGenVertexArrays(1, &vao);
 	glBindVertexArray(vao);
 
-	// Offline recording: the loop below runs with a fixed time step per frame, no input, and an
-	// offscreen output buffer of the requested size, so results do not depend on machine speed.
+	// Offline rendering ("recording"). While a render is in progress the loop below uses a fixed time
+	// step per frame, no input, and an offscreen output buffer of the requested size, so results do not
+	// depend on machine speed. It is started from the command line (--record) or by the Render button,
+	// which renders with exactly the settings currently shown in the panel.
 	Framebuffer recFbo;
 	VideoWriter video;
 	std::vector<unsigned char> recPixels;
 	int recW = 0, recH = 0, recTotal = 0, recFrame = 0;
 	float recStart = 0.f, recEnd = 0.f;
+	double recordWallStart = 0.0;
+	bool recCancel = false;
+	std::string renderStatus; // last render result, shown in the panel
 	if (startSimSpeed >= 0.f) simSpeed = startSimSpeed;
 	if (startSteps > 0) maxSteps = startSteps;
-	if (recording) {
+
+	// Render job settings: the command-line flags fill these in, the panel edits them.
+	int jobW = winW, jobH = winH;
+	int jobSteps = startSteps > 0 ? startSteps : 800; // quality over speed
+	float jobScale = scaleGiven ? startScale : 2.f;   // 2x2 supersampling
+	bool jobHud = showHud;
+	bool jobWholePath = recTo <= 0.f && recFrom <= 0.f; // --range narrows it
+	bool renderRequested = autoRender;                  // set by the Render button, handled next frame
+	int jobFormat = recordPngDir.empty() ? 0 : 1;     // 0 = mp4, 1 = PNG sequence
+	char jobOutput[512];
+	std::snprintf(jobOutput, sizeof(jobOutput), "%s",
+	              !recordFile.empty() ? recordFile.c_str() : !recordPngDir.empty() ? recordPngDir.c_str() : defaultMp4.c_str());
+
+	// The interactive state a render temporarily overrides, restored when it ends.
+	struct SavedState
+	{
+		float renderScale = 1.f;
+		int maxSteps = 400;
+		bool showPanel = true, showHud = false, pathPlaying = false, simRunning = true;
+		glm::vec3 pos{0.f};
+		float yaw = 0.f, pitch = 0.f, roll = 0.f, fov = 60.f, boost = 0.f, pathTime = 0.f;
+		double simTime = 0.0;
+	} saved;
+	auto restoreInteractive = [&]() {
+		renderScale = saved.renderScale;
+		maxSteps = saved.maxSteps;
+		showPanel = saved.showPanel;
+		showHud = saved.showHud;
+		pathPlaying = saved.pathPlaying;
+		simRunning = saved.simRunning;
+		camera.position = saved.pos;
+		camera.SetOrientation(saved.yaw, saved.pitch);
+		camera.rollDeg = saved.roll;
+		camera.fovDeg = saved.fov;
+		observerBoost = saved.boost;
+		pathTime = saved.pathTime;
+		simTime = saved.simTime;
+	};
+
+	// Starts a render of the camera path using recordFile (mp4) or recordPngDir (PNG sequence).
+	auto beginRecording = [&]() -> bool {
 		if (path.keys.empty()) {
-			std::cerr << "Nothing to record: load a camera path with --tour or --path FILE." << std::endl;
-			glfwTerminate();
-			return 1;
+			renderStatus = "Nothing to render: create or load a camera path first.";
+			std::cerr << renderStatus << std::endl;
+			return false;
 		}
-		recW = winW & ~1; // H.264 needs even dimensions
-		recH = winH & ~1;
+		saved = {renderScale, maxSteps, showPanel, showHud, pathPlaying, simRunning, camera.position, camera.YawDeg(),
+		         camera.PitchDeg(), camera.rollDeg, camera.fovDeg, observerBoost, pathTime, simTime};
+		recW = jobW & ~1; // H.264 needs even dimensions
+		recH = jobH & ~1;
 		recStart = std::clamp(recFrom, 0.f, path.Duration());
 		recEnd = recTo > 0.f ? std::min(recTo, path.Duration()) : path.Duration();
 		recTotal = std::max(1, static_cast<int>(std::ceil((recEnd - recStart) * recFps)) + 1);
-		if (startSteps <= 0) maxSteps = 800; // quality over speed
-		if (!scaleGiven) renderScale = 2.f;  // 2x2 supersampling
+		std::error_code ec;
+		if (!recordFile.empty()) {
+			std::filesystem::create_directories(std::filesystem::path(recordFile).parent_path(), ec);
+		}
+		if (!recordPngDir.empty()) {
+			std::filesystem::create_directories(recordPngDir, ec);
+		}
+		recFbo.Resize(recW, recH);
+		if (!recordFile.empty() && !video.Open(recordFile, recW, recH, recFps, static_cast<int>(recBitrate * 1000.f))) {
+			renderStatus = "Could not start the video encoder for " + recordFile;
+			return false;
+		}
+		maxSteps = jobSteps;
+		renderScale = jobScale;
 		simRunning = false;
 		pathPlaying = false;
 		showPanel = false;
-		recFbo.Resize(recW, recH);
-		if (!recordFile.empty() && !video.Open(recordFile, recW, recH, recFps, static_cast<int>(recBitrate * 1000.f))) {
-			glfwTerminate();
-			return 1;
-		}
-		if (!recordPngDir.empty()) {
-			std::filesystem::create_directories(recordPngDir);
-		}
+		showHud = jobHud;
+		recFrame = 0;
+		recCancel = false;
+		recordWallStart = glfwGetTime();
+		recording = true;
 		std::cout << "Recording " << recTotal << " frames of " << recW << "x" << recH << " (" << recStart << "s to " << recEnd
 		          << "s at " << recFps << " fps, internal " << renderScale << "x, " << maxSteps << " steps) to "
 		          << (recordFile.empty() ? recordPngDir : recordFile) << std::endl;
+		return true;
+	};
+	auto endRecording = [&](bool completed) {
+		bool closed = video.Close(); // finalizes the mp4 (writes the index); must happen before exit
+		double secs = glfwGetTime() - recordWallStart;
+		bool ok = completed && closed;
+		std::cout << (ok ? "Done: " : "Stopped early: ") << recFrame << " frames in " << secs << " s" << std::endl;
+		char buf[600];
+		std::snprintf(buf, sizeof(buf), "%s: %d frames in %.0f s -> %s", ok ? "Rendered" : "Stopped", recFrame, secs,
+		              (recordFile.empty() ? recordPngDir : recordFile).c_str());
+		renderStatus = buf;
+		recording = false;
+		if (!cliRecording) {
+			restoreInteractive();
+			if (autoRender) {
+				glfwSetWindowShouldClose(window, GLFW_TRUE); // test mode: quit once the render is done
+			}
+		}
+	};
+	if (cliRecording && !beginRecording()) {
+		glfwTerminate();
+		return 1;
 	}
-	const double recordWallStart = glfwGetTime();
 
 	bool mouseLook = false;
 	double lastX = 0.0, lastY = 0.0;
@@ -415,8 +503,41 @@ int main(int argc, char** argv)
 	const double loopStart = lastTime;
 	int frame = 0;
 
-	while (!glfwWindowShouldClose(window)) {
+	while (true) {
 		glfwPollEvents();
+		if (glfwWindowShouldClose(window)) {
+			if (recording && !cliRecording) {
+				// Esc / closing the window during a render cancels the render (the video so far is kept).
+				glfwSetWindowShouldClose(window, GLFW_FALSE);
+				recCancel = true;
+			} else {
+				break;
+			}
+		}
+		if (recording && !cliRecording && recCancel) {
+			endRecording(false);
+			continue;
+		}
+		if (renderRequested) {
+			renderRequested = false;
+			if (!recording) {
+				// Take the output settings from the panel, then start the render.
+				std::string out = jobOutput;
+				if (jobFormat == 0) {
+					if (out.size() < 4 || out.compare(out.size() - 4, 4, ".mp4") != 0) out += ".mp4";
+					recordFile = out;
+					recordPngDir.clear();
+				} else {
+					recordPngDir = out;
+					recordFile.clear();
+				}
+				if (jobWholePath) {
+					recFrom = 0.f;
+					recTo = -1.f;
+				}
+				beginRecording();
+			}
+		}
 
 		double now = glfwGetTime();
 		float dt = static_cast<float>(std::min(now - lastTime, 0.1));
@@ -426,7 +547,11 @@ int main(int argc, char** argv)
 		float fade = 1.f; // fade in / out, recording only
 		if (recording) {
 			if (recFrame >= recTotal) {
-				break;
+				if (cliRecording) {
+					break;
+				}
+				endRecording(true);
+				continue;
 			}
 			const float t = std::min(recStart + static_cast<float>(recFrame) / recFps, recEnd);
 			pathTime = t;
@@ -744,6 +869,66 @@ int main(int argc, char** argv)
 				selectedKey = -1;
 			}
 		}
+		if (ImGui::CollapsingHeader("Render video", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::TextDisabled("Renders the camera path above using the current settings.");
+			int fmt = jobFormat;
+			if (ImGui::Combo("Format", &fmt, "MP4 video (H.264)\0PNG sequence (folder)\0")) {
+				if (fmt != jobFormat) {
+					jobFormat = fmt;
+					std::snprintf(jobOutput, sizeof(jobOutput), "%s", fmt == 0 ? defaultMp4.c_str() : defaultPngDir.c_str());
+				}
+			}
+			ImGui::InputText(jobFormat == 0 ? "File" : "Folder", jobOutput, sizeof(jobOutput));
+
+			char resLabel[32];
+			std::snprintf(resLabel, sizeof(resLabel), "%d x %d", jobW, jobH);
+			if (ImGui::BeginCombo("Resolution", resLabel)) {
+				static const int kRes[][2] = {{1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+				for (const auto& res : kRes) {
+					char label[32];
+					std::snprintf(label, sizeof(label), "%d x %d", res[0], res[1]);
+					if (ImGui::Selectable(label, jobW == res[0] && jobH == res[1])) {
+						jobW = res[0];
+						jobH = res[1];
+					}
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::SliderInt("Frame rate", &recFps, 24, 60);
+			ImGui::SliderFloat("Supersampling", &jobScale, 1.f, 2.f, "%.2fx");
+			ImGui::SliderInt("Ray steps", &jobSteps, 200, 1500);
+			if (jobFormat == 0) {
+				ImGui::SliderFloat("Bitrate (Mbit/s)", &recBitrate, 5.f, 100.f, "%.0f");
+			}
+			ImGui::SliderFloat("Fade in (s)", &recFadeIn, 0.f, 3.f, "%.1f");
+			ImGui::SliderFloat("Fade out (s)", &recFade, 0.f, 3.f, "%.1f");
+			ImGui::Checkbox("Include HUD", &jobHud);
+			ImGui::Checkbox("Whole path", &jobWholePath);
+			if (!jobWholePath) {
+				if (recTo <= 0.f) recTo = path.Duration();
+				ImGui::DragFloatRange2("Range (s)", &recFrom, &recTo, 0.1f, 0.f, std::max(path.Duration(), 0.1f), "from %.1f", "to %.1f");
+			}
+
+			const float from = jobWholePath ? 0.f : std::clamp(recFrom, 0.f, path.Duration());
+			const float to = jobWholePath ? path.Duration() : std::clamp(std::max(recTo, from), 0.f, path.Duration());
+			const int frames = std::max(1, static_cast<int>(std::ceil((to - from) * recFps)) + 1);
+			// Rough estimate: ~30 ms/frame at 1080p with 2x supersampling, scaling with pixels and samples.
+			const double estSecs = frames * 0.030 * (static_cast<double>(jobW) * jobH / (1920.0 * 1080.0)) *
+			                       (jobScale * jobScale / 4.0) * (jobSteps / 800.0 * 0.5 + 0.5);
+			ImGui::Text("%d frames, %.1f s of video, ~%.0f s to render", frames, to - from, estSecs);
+
+			ImGui::BeginDisabled(path.keys.empty());
+			if (ImGui::Button("Render", ImVec2(-1.f, 0.f))) {
+				renderRequested = true; // starts at the top of the next frame
+			}
+			ImGui::EndDisabled();
+			if (path.keys.empty()) {
+				ImGui::TextDisabled("Needs a camera path: press K to add keyframes or load a tour.");
+			}
+			if (!renderStatus.empty()) {
+				ImGui::TextWrapped("%s", renderStatus.c_str());
+			}
+		}
 		if (ImGui::CollapsingHeader("HUD", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Checkbox("Show HUD (H)", &showHud);
 			ImGui::SliderFloat("Black hole mass (Msun)", &bhMassSolar, 1.f, 1.0e7f, "%.0f", ImGuiSliderFlags_Logarithmic);
@@ -862,16 +1047,59 @@ int main(int argc, char** argv)
 			}
 			if (!ok) {
 				std::cerr << "Recording failed at frame " << recFrame << std::endl;
-				break;
+				if (cliRecording) {
+					break;
+				}
+				endRecording(false);
+				continue;
 			}
 			recFrame++;
+			const double perFrame = (glfwGetTime() - recordWallStart) / recFrame;
+			const double secsLeft = perFrame * (recTotal - recFrame);
 			if (recFrame % 30 == 0 || recFrame == recTotal) {
-				double secs = glfwGetTime() - recordWallStart;
-				double perFrame = secs / recFrame;
 				std::cout << "frame " << recFrame << "/" << recTotal << "  (" << perFrame * 1000.0 << " ms/frame, ~"
-				          << perFrame * (recTotal - recFrame) << " s left)" << std::endl;
+				          << secsLeft << " s left)" << std::endl;
 			}
-			continue; // no swap, no vsync wait
+
+			if (!cliRecording) {
+				// Started from the panel: show a live preview of the frame just rendered, with progress
+				// and a Cancel button, in the (visible) window.
+				int ww, wh;
+				glfwGetFramebufferSize(window, &ww, &wh);
+				glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+				glViewport(0, 0, ww, wh);
+				glClearColor(0.04f, 0.04f, 0.05f, 1.f);
+				glClear(GL_COLOR_BUFFER_BIT);
+				if (ww > 0 && wh > 0) {
+					const float s = std::min(static_cast<float>(ww) / recW, static_cast<float>(wh) / recH);
+					const int dw = static_cast<int>(recW * s), dh = static_cast<int>(recH * s);
+					const int dx = (ww - dw) / 2, dy = (wh - dh) / 2;
+					glBindFramebuffer(GL_READ_FRAMEBUFFER, recFbo.Fbo());
+					glBlitFramebuffer(0, 0, recW, recH, dx, dy, dx + dw, dy + dh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+				}
+				glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+				ImGui_ImplOpenGL3_NewFrame();
+				ImGui_ImplGlfw_NewFrame();
+				ImGui::GetStyle().Alpha = 1.f;
+				ImGui::NewFrame();
+				ImGui::SetNextWindowPos(ImVec2(12.f, 12.f), ImGuiCond_Always);
+				ImGui::SetNextWindowBgAlpha(0.8f);
+				ImGui::Begin("Rendering", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
+				ImGui::Text("Rendering %dx%d to", recW, recH);
+				ImGui::TextWrapped("%s", (recordFile.empty() ? recordPngDir : recordFile).c_str());
+				ImGui::ProgressBar(static_cast<float>(recFrame) / recTotal, ImVec2(340.f, 0.f));
+				ImGui::Text("frame %d / %d   %.0f ms/frame", recFrame, recTotal, perFrame * 1000.0);
+				ImGui::Text("about %.0f s left", secsLeft);
+				if (ImGui::Button("Cancel (Esc)")) {
+					recCancel = true;
+				}
+				ImGui::End();
+				ImGui::Render();
+				ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+				glfwSwapBuffers(window);
+			}
+			continue; // no vsync wait for CLI renders
 		}
 
 		// Screenshot mode: grab the frame (scene + whatever GUI is enabled) after a few warm-up frames.
@@ -892,9 +1120,7 @@ int main(int argc, char** argv)
 	}
 
 	if (recording) {
-		bool closed = video.Close(); // finalizes the mp4 (writes the index), must happen before exit
-		std::cout << (recFrame >= recTotal && closed ? "Done: " : "Stopped early: ") << recFrame << " frames in "
-		          << glfwGetTime() - recordWallStart << " s" << std::endl;
+		endRecording(recFrame >= recTotal);
 	}
 
 	glDeleteVertexArrays(1, &vao);

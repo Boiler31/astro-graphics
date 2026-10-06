@@ -18,6 +18,7 @@ public:
 	void Bind() const;
 
 	GLuint Texture() const { return tex; }
+	GLuint Fbo() const { return fbo; }
 	int Width() const { return w; }
 	int Height() const { return h; }
 

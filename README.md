@@ -87,6 +87,15 @@ a circular orbit, or along the view direction. Motion gives relativistic aberrat
 ahead) and a Doppler shift of everything seen. The *boost* (keyframed) scales that motion from 0 to full speed.
 `--observer N --boost B --pathtime T --hud --panel --savepath FILE` are handy for scripted renders.
 
+### Render button
+
+The *Render video* panel renders the loaded camera path from inside the app, using exactly the settings you
+currently see (disk, bloom, exposure, observer, ...). Pick MP4 or a PNG sequence, the output file or folder,
+resolution, frame rate, supersampling, ray steps, bitrate, fades, whether to include the HUD, and optionally a time
+range, then press **Render**. The window shows a live preview with a progress bar, time estimate and a Cancel
+button (Esc also cancels; the video up to that point is kept). When it finishes you are back where you were
+(camera, time and settings are restored). The default output is `renders\blackhole.mp4`.
+
 ## Recording the video
 
 Offline rendering uses a fixed time step per frame, 2x2 supersampling and 800 ray steps by default, so
@@ -103,6 +112,8 @@ encoder (GPU-accelerated where available); no ffmpeg needed.
 # lossless PNG sequence instead (large: several GB), then optionally tools\make_video.ps1
 .\build\Release\BlackHole.exe --tour --recordpng renders\frames --size 1920 1080
 ```
+
+`--autorender` starts the in-app render immediately (used for testing).
 
 Options: `--fps N` (60), `--bitrate MBPS` (40), `--steps N` (800), `--scale S` (2 = supersampling),
 `--fade S` / `--fadein S` (1.5 / 0.5 s), `--range A B`, `--simspeed X` (disk animation speed, M per second
