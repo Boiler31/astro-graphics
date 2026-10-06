@@ -15,8 +15,10 @@
 #include "Blackbody.h"
 #include "Bloom.h"
 #include "Camera.h"
+#include "CameraPath.h"
 #include "Framebuffer.h"
 #include "Geodesic.h"
+#include "Observer.h"
 #include "Program.h"
 #include "Screenshot.h"
 #include "Texture.h"
@@ -26,6 +28,10 @@
 #endif
 
 static bool g_reloadRequested = false;
+static bool g_addKeyframe = false;  // K
+static bool g_togglePlay = false;   // Space
+static bool g_toggleHud = false;    // H
+static bool g_togglePanel = false;  // F1
 
 static void ErrorCallback(int error, const char* description)
 {
@@ -45,6 +51,14 @@ static void KeyCallback(GLFWwindow* window, int key, int scancode, int action, i
 		glfwSetWindowShouldClose(window, GLFW_TRUE);
 	} else if (key == GLFW_KEY_R) {
 		g_reloadRequested = true;
+	} else if (key == GLFW_KEY_K) {
+		g_addKeyframe = true;
+	} else if (key == GLFW_KEY_SPACE) {
+		g_togglePlay = true;
+	} else if (key == GLFW_KEY_H) {
+		g_toggleHud = true;
+	} else if (key == GLFW_KEY_F1) {
+		g_togglePanel = true;
 	}
 }
 
@@ -71,7 +85,20 @@ int main(int argc, char** argv)
 	//   --tpeak K             disk peak temperature in Kelvin
 	//   --bright X            disk brightness scale
 	//   --beamexp N           beaming exponent (4 = physical)
+	//   --observer N          0 static, 1 free fall, 2 circular orbit, 3 along view
+	//   --boost B             observer boost 0..1 (fraction of the model's speed)
+	//   --tour                load the built-in camera tour
+	//   --path FILE           load a camera path file
+	//   --pathtime T          put the camera at time T on the path (and pause there)
+	//   --savepath FILE       write the loaded path (e.g. with --tour) to FILE and exit
+	//   --hud                 show the HUD (also in screenshots)
+	//   --panel               show the control panel in screenshots
 	std::string fxLetters = "gtdcb";
+	int startObserver = 0;
+	float startBoost = 0.f;
+	bool startTour = false, startHud = false, startPanel = false;
+	std::string startPathFile, savePathFile;
+	float startPathTime = -1.f;
 	bool startChecker = false;
 	float startTPeak = -1.f, startBright = -1.f, startBeamExp = -1.f, startTurb = -1.f;
 	float startTime = 0.f;
@@ -93,6 +120,22 @@ int main(int argc, char** argv)
 			fxLetters = argv[++i];
 		} else if (std::strcmp(argv[i], "--checker") == 0) {
 			startChecker = true;
+		} else if (std::strcmp(argv[i], "--observer") == 0 && i + 1 < argc) {
+			startObserver = std::atoi(argv[++i]);
+		} else if (std::strcmp(argv[i], "--boost") == 0 && i + 1 < argc) {
+			startBoost = static_cast<float>(std::atof(argv[++i]));
+		} else if (std::strcmp(argv[i], "--tour") == 0) {
+			startTour = true;
+		} else if (std::strcmp(argv[i], "--path") == 0 && i + 1 < argc) {
+			startPathFile = argv[++i];
+		} else if (std::strcmp(argv[i], "--savepath") == 0 && i + 1 < argc) {
+			savePathFile = argv[++i];
+		} else if (std::strcmp(argv[i], "--pathtime") == 0 && i + 1 < argc) {
+			startPathTime = static_cast<float>(std::atof(argv[++i]));
+		} else if (std::strcmp(argv[i], "--hud") == 0) {
+			startHud = true;
+		} else if (std::strcmp(argv[i], "--panel") == 0) {
+			startPanel = true;
 		} else if (std::strcmp(argv[i], "--bright") == 0 && i + 1 < argc) {
 			startBright = static_cast<float>(std::atof(argv[++i]));
 		} else if (std::strcmp(argv[i], "--beamexp") == 0 && i + 1 < argc) {
@@ -214,6 +257,57 @@ int main(int argc, char** argv)
 	const double kLutTMin = 1000.0, kLutTMax = 40000.0;
 	GLuint blackbodyLut = CreateColorLut1D(blackbody::BuildLut(1024, kLutTMin, kLutTMax));
 
+	// Observer: how the camera moves relative to a hovering one (aberration + Doppler), and a
+	// keyframed camera path (Space plays it, K adds a keyframe from the current view).
+	ObserverModel observerModel = static_cast<ObserverModel>(std::clamp(startObserver, 0, 3));
+	float observerBoost = startBoost; // 0 = static, 1 = full model speed
+	float viewSpeed = 0.8f;           // speed for the "along view" model
+	CameraPath path;
+	bool pathPlaying = false, pathLoop = false;
+	float pathTime = 0.f;
+	int selectedKey = -1;
+	char pathFile[256] = "resources/paths/tour.txt";
+	bool showHud = startHud;
+	bool showPanel = screenshotPath.empty() || startPanel;
+	float bhMassSolar = 10.f; // only used to translate M into kilometres on the HUD
+
+	auto applyKeyframe = [&](const Keyframe& k) {
+		camera.position = k.position;
+		camera.SetOrientation(k.yaw, k.pitch);
+		camera.fovDeg = k.fov;
+		observerBoost = k.boost;
+	};
+	auto loadTour = [&]() {
+		path = CameraPath::DefaultTour();
+		observerModel = ObserverModel::FreeFall; // the tour ends with a plunge
+		pathTime = 0.f;
+		selectedKey = -1;
+	};
+	if (!startPathFile.empty()) {
+		int model = -1;
+		if (path.Load(startPathFile, &model)) {
+			if (model >= 0 && model <= 3) observerModel = static_cast<ObserverModel>(model);
+		} else {
+			std::cerr << "Could not load camera path " << startPathFile << std::endl;
+		}
+	} else if (startTour) {
+		loadTour();
+		if (startObserver != 0) observerModel = static_cast<ObserverModel>(std::clamp(startObserver, 0, 3));
+	}
+	if (startPathTime >= 0.f && !path.keys.empty()) {
+		pathTime = std::clamp(startPathTime, 0.f, path.Duration());
+		applyKeyframe(path.Sample(pathTime));
+		simTime = pathTime * simSpeed; // keep the disk animation consistent with the path time
+		simRunning = false;
+	}
+
+	if (!savePathFile.empty()) {
+		bool saved = path.Save(savePathFile, static_cast<int>(observerModel));
+		std::cout << (saved ? "Saved " : "Failed to save ") << savePathFile << std::endl;
+		glfwTerminate();
+		return saved ? 0 : 1;
+	}
+
 	// Core profile needs a VAO bound even when the vertex shader reads no attributes.
 	GLuint vao = 0;
 	glGenVertexArrays(1, &vao);
@@ -248,6 +342,49 @@ int main(int argc, char** argv)
 			}
 		}
 
+		// Key shortcuts handled here so they run in the main loop.
+		if (g_togglePlay) {
+			g_togglePlay = false;
+			if (!path.keys.empty()) {
+				pathPlaying = !pathPlaying;
+				if (pathPlaying && pathTime >= path.Duration()) pathTime = 0.f;
+			}
+		}
+		if (g_toggleHud) {
+			g_toggleHud = false;
+			showHud = !showHud;
+		}
+		if (g_togglePanel) {
+			g_togglePanel = false;
+			showPanel = !showPanel;
+		}
+		if (g_addKeyframe) {
+			g_addKeyframe = false;
+			Keyframe k;
+			k.time = path.keys.empty() ? 0.f : path.Duration() + 5.f;
+			k.position = camera.position;
+			k.yaw = camera.YawDeg();
+			k.pitch = camera.PitchDeg();
+			k.fov = camera.fovDeg;
+			k.boost = observerBoost;
+			selectedKey = path.Add(k);
+		}
+
+		// Camera path playback drives the camera (and the disk clock, so scrubbing is repeatable).
+		if (pathPlaying && !path.keys.empty()) {
+			pathTime += dt;
+			if (pathTime >= path.Duration()) {
+				if (pathLoop) {
+					pathTime = std::fmod(pathTime, std::max(path.Duration(), 0.01f));
+				} else {
+					pathTime = path.Duration();
+					pathPlaying = false;
+				}
+			}
+			applyKeyframe(path.Sample(pathTime));
+			simTime = pathTime * simSpeed;
+		}
+
 		// Hold the right mouse button to look around (cursor is hidden/locked while held).
 		bool rmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
 		if (rmb && !mouseLook && !io.WantCaptureMouse) {
@@ -264,11 +401,13 @@ int main(int argc, char** argv)
 		if (mouseLook) {
 			double x, y;
 			glfwGetCursorPos(window, &x, &y);
-			camera.Rotate(static_cast<float>(x - lastX), static_cast<float>(y - lastY));
+			if (!pathPlaying) {
+				camera.Rotate(static_cast<float>(x - lastX), static_cast<float>(y - lastY));
+			}
 			lastX = x;
 			lastY = y;
 		}
-		if (!io.WantCaptureKeyboard) {
+		if (!io.WantCaptureKeyboard && !pathPlaying) {
 			camera.Update(window, dt);
 		}
 		if (lensing) {
@@ -277,6 +416,10 @@ int main(int argc, char** argv)
 				camera.position = (r > 1e-6f ? camera.position / r : glm::vec3(0.f, 0.f, 1.f)) * kMinCameraRadius;
 			}
 		}
+
+		// Camera velocity relative to a hovering observer at this spot (zero for the static model).
+		const glm::vec3 camBeta =
+		    ObserverVelocity(observerModel, camera.position, camera.Forward(), observerBoost, viewSpeed);
 
 		int fbw, fbh;
 		glfwGetFramebufferSize(window, &fbw, &fbh);
@@ -300,6 +443,7 @@ int main(int argc, char** argv)
 			program.SendUniformData(camera.Up(), "uCamUp");
 			program.SendUniformData(camera.Forward(), "uCamForward");
 			program.SendUniformData(camera.TanHalfFov(), "uTanHalfFov");
+			program.SendUniformData(camBeta, "uCamBeta");
 			program.SendUniformData(skyMode, "uSkyMode");
 			program.SendUniformData(skyGain, "uSkyGain");
 			program.SendUniformData(skyBlueshift ? 1 : 0, "uSkyBlueshift");
@@ -358,21 +502,17 @@ int main(int argc, char** argv)
 			Program::Unbind();
 		}
 
-		// Screenshot mode: grab the scene (without the GUI) after a couple of warm-up frames.
-		if (!screenshotPath.empty() && ++frame >= 3) {
-			SaveScreenshot(screenshotPath, fbw, fbh);
-			break;
-		}
-
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
+		if (showPanel) {
 		ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
 		ImGui::SetNextWindowSize(ImVec2(330, 0), ImGuiCond_FirstUseEver);
 		ImGui::Begin("Black Hole");
 		ImGui::Text("%.1f FPS (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
 		ImGui::TextDisabled("WASD/QE move, Shift fast, RMB-drag look");
-		ImGui::TextDisabled("R reload shaders, Esc quit");
+		ImGui::TextDisabled("R reload shaders, Space play path, K add keyframe");
+		ImGui::TextDisabled("H HUD, F1 hide this panel, Esc quit");
 
 		if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Text("pos  %.1f %.1f %.1f", camera.position.x, camera.position.y, camera.position.z);
@@ -382,6 +522,102 @@ int main(int argc, char** argv)
 			if (ImGui::Button("Reset camera")) {
 				camera.Reset();
 			}
+		}
+		if (ImGui::CollapsingHeader("Observer", ImGuiTreeNodeFlags_DefaultOpen)) {
+			int model = static_cast<int>(observerModel);
+			if (ImGui::BeginCombo("Motion", ObserverModelName(observerModel))) {
+				for (int m = 0; m < 4; m++) {
+					if (ImGui::Selectable(ObserverModelName(static_cast<ObserverModel>(m)), model == m)) {
+						observerModel = static_cast<ObserverModel>(m);
+					}
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::SliderFloat("Boost", &observerBoost, 0.f, 1.f, "%.2f");
+			if (observerModel == ObserverModel::AlongView) {
+				ImGui::SliderFloat("Speed (c)", &viewSpeed, 0.f, 0.99f, "%.2f");
+			}
+			ImGui::Text("v = %.3f c (vs. a hovering observer)", glm::length(camBeta));
+			ImGui::TextDisabled("Moving = aberration (sky bunches ahead) + Doppler");
+		}
+		if (ImGui::CollapsingHeader("Camera path", ImGuiTreeNodeFlags_DefaultOpen)) {
+			if (ImGui::Button(pathPlaying ? "Pause" : "Play")) {
+				g_togglePlay = true;
+			}
+			ImGui::SameLine();
+			ImGui::Checkbox("Loop", &pathLoop);
+			ImGui::SameLine();
+			if (ImGui::Button("Add key (K)")) {
+				g_addKeyframe = true;
+			}
+			if (!path.keys.empty()) {
+				float dur = path.Duration();
+				if (ImGui::SliderFloat("Time (s)", &pathTime, 0.f, dur, "%.1f")) {
+					applyKeyframe(path.Sample(pathTime));
+					simTime = pathTime * simSpeed;
+				}
+			}
+			ImGui::Text("%d keyframes, %.0f s", static_cast<int>(path.keys.size()), path.Duration());
+			ImGui::BeginChild("keys", ImVec2(0, 110), true);
+			for (int i = 0; i < static_cast<int>(path.keys.size()); i++) {
+				const Keyframe& k = path.keys[i];
+				char label[96];
+				std::snprintf(label, sizeof(label), "%5.1fs  r=%.1f  fov %.0f  boost %.1f", k.time, glm::length(k.position),
+				              k.fov, k.boost);
+				if (ImGui::Selectable(label, selectedKey == i)) {
+					selectedKey = i;
+					pathTime = k.time;
+					applyKeyframe(k);
+					simTime = pathTime * simSpeed;
+				}
+			}
+			ImGui::EndChild();
+			if (selectedKey >= 0 && selectedKey < static_cast<int>(path.keys.size())) {
+				if (ImGui::Button("Update from view")) {
+					Keyframe& k = path.keys[selectedKey];
+					k.position = camera.position;
+					k.yaw = camera.YawDeg();
+					k.pitch = camera.PitchDeg();
+					k.fov = camera.fovDeg;
+					k.boost = observerBoost;
+					path.Normalize();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Delete")) {
+					path.Remove(selectedKey);
+					selectedKey = -1;
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Time = now")) {
+					path.keys[selectedKey].time = pathTime;
+					path.Normalize();
+				}
+			}
+			if (ImGui::Button("Load tour")) {
+				loadTour();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Clear")) {
+				path.Clear();
+				pathPlaying = false;
+				selectedKey = -1;
+			}
+			ImGui::InputText("File", pathFile, sizeof(pathFile));
+			if (ImGui::Button("Save")) {
+				path.Save(pathFile, static_cast<int>(observerModel));
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Load")) {
+				int model = -1;
+				if (path.Load(pathFile, &model) && model >= 0 && model <= 3) {
+					observerModel = static_cast<ObserverModel>(model);
+				}
+				selectedKey = -1;
+			}
+		}
+		if (ImGui::CollapsingHeader("HUD", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Checkbox("Show HUD (H)", &showHud);
+			ImGui::SliderFloat("Black hole mass (Msun)", &bhMassSolar, 1.f, 1.0e7f, "%.0f", ImGuiSliderFlags_Logarithmic);
 		}
 		if (ImGui::CollapsingHeader("Light bending", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Checkbox("General relativity (lensing)", &lensing);
@@ -453,8 +689,42 @@ int main(int argc, char** argv)
 			ImGui::TextWrapped("%s", shaderLog.c_str());
 		}
 		ImGui::End();
+		} // showPanel
+
+		// HUD: where the camera is and how its clock runs relative to a distant observer.
+		if (showHud) {
+			const double r = glm::length(camera.position);
+			const double beta = glm::length(camBeta);
+			const double rate = ClockRate(r, beta);
+			const double km = r * 1.4766 * bhMassSolar; // GM/c^2 = 1.4766 km per solar mass
+			char dist[64];
+			if (km >= 1.0e6) {
+				std::snprintf(dist, sizeof(dist), "%.2f million km", km / 1.0e6);
+			} else {
+				std::snprintf(dist, sizeof(dist), "%.0f km", km);
+			}
+			ImGui::SetNextWindowPos(ImVec2(24.f, io.DisplaySize.y - 24.f), ImGuiCond_Always, ImVec2(0.f, 1.f));
+			ImGui::SetNextWindowBgAlpha(0.35f);
+			ImGui::Begin("##hud", nullptr,
+			             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+			                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs);
+			ImGui::SetWindowFontScale(1.4f);
+			ImGui::Text("distance   %.1f M   (%s from a %.0f Msun hole)", r, dist, bhMassSolar);
+			ImGui::Text("clock rate %.3f   1 hour here = %.2f hours far away", rate, rate > 1e-6 ? 1.0 / rate : 0.0);
+			if (beta > 0.001) {
+				ImGui::Text("speed      %.2f c", beta);
+			}
+			ImGui::End();
+		}
+
 		ImGui::Render();
 		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+		// Screenshot mode: grab the frame (scene + whatever GUI is enabled) after a few warm-up frames.
+		if (!screenshotPath.empty() && ++frame >= 3) {
+			SaveScreenshot(screenshotPath, fbw, fbh);
+			break;
+		}
 
 		glfwSwapBuffers(window);
 

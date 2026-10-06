@@ -3,11 +3,12 @@
 Real-time OpenGL black hole fly-through (Schwarzschild lensing + accretion disk) for an
 intro astronomy class. See [PLAN.md](PLAN.md) for the design and milestones.
 
-**Status:** M0-M6 done (window + shader hot-reload, free-fly camera, procedural/texture sky,
+**Status:** M0-M7 done (window + shader hot-reload, free-fly camera, procedural/texture sky,
 Schwarzschild lensing with a validated integrator, accretion disk with physical shading:
 temperature profile, Doppler + gravitational redshift, beaming, blackbody colors, sheared
 turbulent disk animated by Keplerian differential rotation, HDR pipeline with bloom + ACES
-tonemapping + supersampling). Next: M7 (camera paths and moving observers).
+tonemapping + supersampling, keyframed camera paths, moving observers with aberration, HUD).
+Next: M8 (recording the final video).
 
 ## Build (Windows, Visual Studio 2022)
 
@@ -51,6 +52,10 @@ the shadow size sin(a) = 3*sqrt(3) M/r * sqrt(1-2M/r) at several camera distance
 | Q / E | Move down / up |
 | Shift | 4x faster (speed also scales with distance from the origin) |
 | Right mouse drag | Look around |
+| Space | Play / pause the camera path |
+| K | Add a keyframe from the current view |
+| H | Toggle the HUD (distance, clock rate, speed) |
+| F1 | Hide / show the control panel |
 | R | Reload shaders from `shaders/` (a failed compile keeps the last working shader and shows the error in the overlay) |
 | Esc | Quit |
 
@@ -68,3 +73,15 @@ in the Sky panel.
 - [Dear ImGui](https://github.com/ocornut/imgui) v1.91.9 (MIT), vendored in `third_party/imgui`
 - [stb](https://github.com/nothings/stb) (public domain / MIT), vendored in `third_party/stb`
 - GLFW, GLEW, GLM from the CS441 install locations above
+
+## Camera paths and observers
+
+`resources/paths/tour.txt` is a ~75 s flight from far away down to the photon sphere (the storyboard in
+PLAN.md); `--tour` loads the built-in version, `--path FILE` loads a saved one. Press K to add keyframes
+from the current view, edit/scrub them in the *Camera path* panel, and Save/Load text files. Positions
+are in units of M (the hole is at the origin). The camera eases in and out at the ends.
+
+The *Observer* panel chooses how the camera moves relative to a hovering observer: free fall (v = sqrt(2M/r)),
+a circular orbit, or along the view direction. Motion gives relativistic aberration (the sky bunches up
+ahead) and a Doppler shift of everything seen. The *boost* (keyframed) scales that motion from 0 to full speed.
+`--observer N --boost B --pathtime T --hud --panel --savepath FILE` are handy for scripted renders.

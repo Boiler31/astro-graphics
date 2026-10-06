@@ -25,12 +25,18 @@ uniform int uGR;        // 1 = bend light around the black hole, 0 = straight ra
 uniform int uMaxSteps;   // integration step budget per ray
 uniform float uStepScale; // dt = uStepScale * (r - 2M)
 uniform int uDisk;       // 1 = draw the accretion disk
+uniform vec3 uCamBeta;   // camera velocity relative to the static observer (units of c)
 
 void main()
 {
 	vec2 ndc = vUV * 2.0 - 1.0;
 	ndc.x *= uResolution.x / uResolution.y;
 	vec3 rayDir = normalize(uCamForward + ndc.x * uTanHalfFov * uCamRight + ndc.y * uTanHalfFov * uCamUp);
+
+	// A camera that moves relative to the static observer sees aberrated, Doppler-shifted light.
+	// From here on `rayDir` is the viewing direction in the static observer's frame.
+	float dopplerObs;
+	rayDir = aberrate(rayDir, uCamBeta, dopplerObs);
 
 	// Angle covered by one pixel (at screen center).
 	float pixAngle = 2.0 * uTanHalfFov / uResolution.y;
@@ -76,7 +82,7 @@ void main()
 					vec3 p = hermiteSegment(x0, v0, x, v, dt, s);
 					float rd = length(p.xz);
 					if (rd > R_ISCO && rd < uDiskOuter) {
-						vec4 e = diskShade(rd, atan(p.z, p.x), by, fCam);
+						vec4 e = diskShade(rd, atan(p.z, p.x), by, fCam, dopplerObs);
 						diskColor += transmittance * e.a * e.rgb;
 						transmittance *= 1.0 - e.a;
 						if (transmittance < 0.01) {
@@ -110,7 +116,7 @@ void main()
 		// g = 1 / sqrt(1 - 2M/r): brighter (bolometric intensity scales as g^4) and bluer. The
 		// tint is an artistic stand-in for shifting each star's spectrum.
 		if (uSkyBlueshift == 1 && uGR == 1) {
-			float gSky = inversesqrt(max(1.0 - R_HORIZON / length(uCamPos), 1e-3));
+			float gSky = dopplerObs * inversesqrt(max(1.0 - R_HORIZON / length(uCamPos), 1e-3));
 			sky *= pow(gSky, 4.0) * mix(vec3(1.0), vec3(0.75, 0.9, 1.25), clamp(0.8 * log2(gSky), 0.0, 1.0));
 		}
 		col += transmittance * sky;

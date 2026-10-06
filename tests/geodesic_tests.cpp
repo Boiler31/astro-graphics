@@ -2,6 +2,7 @@
 // No OpenGL needed. Exit code is the number of failed checks.
 #include "Blackbody.h"
 #include "Geodesic.h"
+#include "Observer.h"
 
 #include <cmath>
 #include <cstdio>
@@ -15,6 +16,16 @@ static void Check(bool ok, const char* name, const char* fmt, double a, double b
 	std::snprintf(detail, sizeof(detail), fmt, a, b);
 	std::printf("[%s] %s  (%s)\n", ok ? "PASS" : "FAIL", name, detail);
 	if (!ok) g_failures++;
+}
+
+// Short names for the observer helpers used by TestObservers.
+static glm::dvec3 geo_ab(const glm::dvec3& n, const glm::dvec3& beta, double* d)
+{
+	return AberrateToStaticFrame(n, beta, d);
+}
+static double geo_clock(double r, double beta)
+{
+	return ClockRate(r, beta);
 }
 
 static double AngleBetween(const glm::dvec3& a, const glm::dvec3& b)
@@ -151,10 +162,56 @@ static void TestBlackbodyColors()
 	Check(monotone, "blue/red ratio increases with temperature", "%.0f, %.0f", 1.0, 1.0);
 }
 
+// 7. Moving observers: relativistic aberration and clock rates.
+static void TestObservers()
+{
+	const glm::dvec3 vhat(0, 0, -1); // direction of motion
+	for (double beta : {0.3, 0.8, 0.99}) {
+		glm::dvec3 b = beta * vhat;
+		double d;
+		// Looking straight ahead stays straight ahead, with the blueshift sqrt((1+b)/(1-b)).
+		glm::dvec3 fwd = geo_ab(vhat, b, &d);
+		double expected = std::sqrt((1.0 + beta) / (1.0 - beta));
+		char name[96];
+		std::snprintf(name, sizeof(name), "aberration: forward stays forward, Doppler (beta = %.2f)", beta);
+		Check(glm::length(fwd - vhat) < 1e-9 && std::fabs(d - expected) < 1e-9 * expected, name,
+		      "Doppler %.6f, expected %.6f", d, expected);
+
+		// Looking sideways in the observer's frame: the incoming ray in the static frame has
+		// cos(theta) = -beta relative to the direction of motion (light from behind 90 degrees).
+		glm::dvec3 side = geo_ab(glm::dvec3(1, 0, 0), b, &d);
+		std::snprintf(name, sizeof(name), "aberration: 90 degrees <-> cos = -beta (beta = %.2f)", beta);
+		Check(std::fabs(glm::dot(side, vhat) + beta) < 1e-9, name, "cos = %.6f, expected %.6f", glm::dot(side, vhat), -beta);
+	}
+	// Aberration preserves unit length and is the identity at rest.
+	glm::dvec3 n = glm::normalize(glm::dvec3(0.3, -0.5, -0.8));
+	glm::dvec3 a = geo_ab(n, glm::dvec3(0.2, 0.1, -0.5), nullptr);
+	Check(std::fabs(glm::length(a) - 1.0) < 1e-12, "aberrated direction is a unit vector", "|n| = %.12f (%.0f)", glm::length(a), 1.0);
+	Check(glm::length(geo_ab(n, glm::dvec3(0.0), nullptr) - n) < 1e-15, "aberration is the identity at rest", "%.0f %.0f", 0.0, 0.0);
+
+	// Free fall from rest at infinity: v = sqrt(2M/r); orbiting gas: v = sqrt(M/(r-2M)).
+	glm::vec3 pos(0, 0, 10.f);
+	glm::vec3 ff = ObserverVelocity(ObserverModel::FreeFall, pos, glm::vec3(0, 0, -1), 1.f, 0.8f);
+	Check(std::fabs(glm::length(ff) - std::sqrt(2.0f / 10.f)) < 1e-6 && ff.z < 0.f, "free-fall speed sqrt(2M/r), directed inward",
+	      "|v| = %.5f, expected %.5f", glm::length(ff), std::sqrt(2.0 / 10.0));
+	glm::vec3 orb = ObserverVelocity(ObserverModel::CircularOrbit, pos, glm::vec3(0, 0, -1), 1.f, 0.8f);
+	Check(std::fabs(glm::length(orb) - std::sqrt(1.0f / 8.f)) < 1e-6 && std::fabs(glm::dot(orb, glm::normalize(pos))) < 1e-6,
+	      "circular-orbit speed sqrt(M/(r-2M)), tangential", "|v| = %.5f, expected %.5f", glm::length(orb), std::sqrt(1.0 / 8.0));
+	Check(glm::length(ObserverVelocity(ObserverModel::FreeFall, pos, glm::vec3(0, 0, -1), 0.f, 0.8f)) == 0.f,
+	      "boost 0 means static", "%.0f %.0f", 0.0, 0.0);
+
+	// Clock rates: a static clock at r = 3M runs at sqrt(1/3); motion slows it further.
+	Check(std::fabs(geo_clock(3.0, 0.0) - std::sqrt(1.0 / 3.0)) < 1e-12, "static clock at 3M runs at sqrt(1/3)",
+	      "%.6f vs %.6f", geo_clock(3.0, 0.0), std::sqrt(1.0 / 3.0));
+	Check(std::fabs(geo_clock(1e9, 0.6) - 0.8) < 1e-6, "clock at rest far away, moving at 0.6c: 0.8", "%.6f vs %.6f",
+	      geo_clock(1e9, 0.6), 0.8);
+}
+
 int main()
 {
 	TestWeakFieldDeflection();
 	TestBlackbodyColors();
+	TestObservers();
 	TestCriticalImpactParameter();
 	TestPhotonSphere();
 	TestConservation();

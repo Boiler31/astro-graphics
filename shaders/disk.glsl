@@ -111,7 +111,8 @@ vec4 diskDebugShade(float r, float phi)
 // Emission (rgb, linear HDR) and opacity (a) of the disk at orbital radius r and azimuth phi.
 //   by    = b_y for this photon, already divided by sqrt(1 - 2M/r_cam) (see staticObserverVelocity)
 //   fCam  = 1 - 2M/r_cam
-vec4 diskShade(float r, float phi, float by, float fCam)
+//   dopplerObs = nu_observed / nu_static for a camera that moves relative to the static observer
+vec4 diskShade(float r, float phi, float by, float fCam, float dopplerObs)
 {
 	if (uDiskDebug == 1) {
 		return diskDebugShade(r, phi);
@@ -124,7 +125,7 @@ vec4 diskShade(float r, float phi, float by, float fCam)
 	float g = 1.0;
 	if (uFxGravity == 1)      g *= sqrt((1.0 - R_HORIZON / r) / fCam);
 	if (uFxTimeDilation == 1) g *= sqrt((r - 3.0) / (r - 2.0));
-	if (uFxDoppler == 1)      g /= max(1.0 - omega * by, 0.05);
+	if (uFxDoppler == 1)      g = g * dopplerObs / max(1.0 - omega * by, 0.05); // gas motion x camera motion
 
 	float Tcolor = (uFxColorShift == 1) ? g * T : T;
 	float intensity = flux * ((uFxBeaming == 1) ? pow(g, uBeamExp) : 1.0);

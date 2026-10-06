@@ -33,6 +33,24 @@ void rk4Step(inout vec3 x, inout vec3 v, float h2, float dt)
 	v += dt / 6.0 * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
 }
 
+// Relativistic aberration. A viewing direction n in the frame of an observer moving with velocity
+// beta (units of c, relative to the static observer) -> the viewing direction in the static
+// observer's frame. Everything bunches up toward the direction of motion. `doppler` returns
+// nu_observed / nu_static for light arriving along that ray (> 1 when looking forward).
+// Same math as AberrateToStaticFrame in src/Observer.cpp (unit-tested there).
+vec3 aberrate(vec3 n, vec3 beta, out float doppler)
+{
+	float b2 = dot(beta, beta);
+	if (b2 < 1e-10) {
+		doppler = 1.0;
+		return n;
+	}
+	float gamma = inversesqrt(1.0 - b2);
+	float bn = dot(beta, n);
+	doppler = 1.0 / (gamma * (1.0 - bn));
+	return normalize(n / gamma - beta + (gamma / (1.0 + gamma)) * bn * beta);
+}
+
 // Camera ray n (unit, in world axes) seen by an observer hovering at camPos -> coordinate-space
 // velocity for the integrator. The radial part is squashed by sqrt(1 - 2M/r) (the metric's g_rr);
 // without it the shadow would be the wrong size when the camera is close.
