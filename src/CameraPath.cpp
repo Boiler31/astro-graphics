@@ -9,11 +9,11 @@
 
 namespace
 {
-constexpr int kChannels = 8; // x y z yaw pitch fov boost roll
+constexpr int kChannels = 9; // x y z yaw pitch fov boost roll look
 
 std::array<float, kChannels> Pack(const Keyframe& k)
 {
-	return {k.position.x, k.position.y, k.position.z, k.yaw, k.pitch, k.fov, k.boost, k.roll};
+	return {k.position.x, k.position.y, k.position.z, k.yaw, k.pitch, k.fov, k.boost, k.roll, k.look};
 }
 
 Keyframe Unpack(const std::array<float, kChannels>& v, float t)
@@ -26,6 +26,7 @@ Keyframe Unpack(const std::array<float, kChannels>& v, float t)
 	k.fov = std::clamp(v[5], 10.f, 150.f);
 	k.boost = std::clamp(v[6], 0.f, 1.f);
 	k.roll = v[7];
+	k.look = std::clamp(v[8], 0.f, 1.f);
 	return k;
 }
 } // namespace
@@ -117,11 +118,11 @@ bool CameraPath::Save(const std::string& file, int observerModel) const
 		std::cerr << "Cannot write " << file << std::endl;
 		return false;
 	}
-	out << "# camera path v1: key time x y z yaw pitch fov boost [roll]\n";
+	out << "# camera path v1: key time x y z yaw pitch fov boost [roll look]\n";
 	out << "observer " << observerModel << "\n";
 	for (const Keyframe& k : keys) {
 		out << "key " << k.time << " " << k.position.x << " " << k.position.y << " " << k.position.z << " " << k.yaw
-		    << " " << k.pitch << " " << k.fov << " " << k.boost << " " << k.roll << "\n";
+		    << " " << k.pitch << " " << k.fov << " " << k.boost << " " << k.roll << " " << k.look << "\n";
 	}
 	return true;
 }
@@ -148,7 +149,8 @@ bool CameraPath::Load(const std::string& file, int* observerModel)
 			ss >> k.time >> k.position.x >> k.position.y >> k.position.z >> k.yaw >> k.pitch >> k.fov >> k.boost;
 			if (ss) {
 				float r = 0.f;
-				if (ss >> r) k.roll = r; // roll is optional (older files omit it)
+				if (ss >> r) k.roll = r; // roll and look are optional (older files omit them)
+				if (ss >> r) k.look = r;
 				loaded.push_back(k);
 			}
 		}
@@ -167,29 +169,48 @@ void CameraPath::LookAtOrigin(const glm::vec3& pos, float& yawDeg, float& pitchD
 
 CameraPath CameraPath::DefaultTour()
 {
-	// (time s, radius M, azimuth deg, elevation deg above the disk plane, fov deg, boost)
-	struct Spec { float t, r, az, el, fov, boost; };
-	const Spec specs[] = {
-		{0.f, 220.f, -25.f, 7.f, 50.f, 0.f},   // far away: a small dark spot, stars bent around it
-		{10.f, 120.f, -15.f, 8.f, 55.f, 0.f},
-		{20.f, 50.f, 0.f, 10.f, 60.f, 0.f},    // the disk appears, one side much brighter
-		{30.f, 28.f, 25.f, 3.f, 62.f, 0.f},    // near edge-on: far side lensed over and under the shadow
-		{40.f, 18.f, 70.f, 4.f, 62.f, 0.f},
-		{50.f, 14.f, 140.f, 12.f, 66.f, 0.f},  // sweeping around: the bright side flips
-		{58.f, 10.f, 200.f, 20.f, 70.f, 0.f},
-		{66.f, 6.5f, 250.f, 14.f, 70.f, 0.f},  // descending: clock readout drops
-		{72.f, 4.6f, 275.f, 8.f, 72.f, 1.f},   // free fall begins
-		{75.f, 3.3f, 285.f, 5.f, 75.f, 1.f},   // plunge toward the photon sphere
-	};
+	// A hyperbolic fly-by of the black hole: the camera falls in along a conic orbit
+	//     r(phi) = p / (1 + e cos(phi)),   p = r_p (1 + e),
+	// reaches its closest approach r_p at phi = 0, whips past, and flies back out the other side,
+	// aimed at the hole the whole time. Keyframes are generated from that orbit so the spline
+	// follows a smooth arc; time is weighted so the far parts go by briskly and the encounter
+	// (where things look best) gets the screen time.
+	const float rPeri = 7.5f;                       // closest approach, in M (ISCO is 6M)
+	const float ecc = 1.5f;                         // eccentricity > 1: unbound, swings past
+	const float p = rPeri * (1.f + ecc);
+	const float rStart = 220.f;                     // where the shot begins and ends
+	const float phiMax = glm::degrees(std::acos((p / rStart - 1.f) / ecc)); // ~127.6 degrees
+	const float totalTime = 44.f;                   // seconds
+	const int n = 31;                               // keyframes (odd, so one lands exactly on periapsis)
+
+	struct Pt { float phi, r, t; };
+	std::vector<Pt> pts(n);
+	float acc = 0.f;
+	for (int i = 0; i < n; i++) {
+		pts[i].phi = -phiMax + 2.f * phiMax * static_cast<float>(i) / (n - 1);
+		pts[i].r = p / (1.f + ecc * std::cos(glm::radians(pts[i].phi)));
+		if (i > 0) {
+			// Time per degree grows with distance (r^0.7): between the real law (angular rate ~ 1/r^2,
+			// far too slow when far away) and a constant angular rate.
+			float rMid = 0.5f * (pts[i].r + pts[i - 1].r);
+			acc += std::pow(rMid, 0.7f) * (pts[i].phi - pts[i - 1].phi);
+		}
+		pts[i].t = acc;
+	}
+
 	CameraPath path;
-	for (const Spec& s : specs) {
-		const float az = glm::radians(s.az), el = glm::radians(s.el);
+	for (const Pt& pt : pts) {
+		const float az = glm::radians(pt.phi);
+		// Elevation above the disk plane: higher during the pass so the camera clears the disk.
+		const float el = glm::radians(9.f + 6.f * std::exp(-(pt.phi / 45.f) * (pt.phi / 45.f)));
+		const float lr = std::log(pt.r / rPeri); // 0 at periapsis
 		Keyframe k;
-		k.time = s.t;
-		k.position = s.r * glm::vec3(std::cos(el) * std::sin(az), std::sin(el), std::cos(el) * std::cos(az));
+		k.time = pt.t / acc * totalTime;
+		k.position = pt.r * glm::vec3(std::cos(el) * std::sin(az), std::sin(el), std::cos(el) * std::cos(az));
 		LookAtOrigin(k.position, k.yaw, k.pitch);
-		k.fov = s.fov;
-		k.boost = s.boost;
+		k.look = 1.f; // keep the hole centered (main compensates for aberration when the camera is fast)
+		k.fov = 55.f + 45.f * std::exp(-(lr / 0.9f) * (lr / 0.9f)); // 100 degrees at periapsis keeps the hole in frame
+		k.boost = std::exp(-(lr / 0.5f) * (lr / 0.5f));              // full orbital speed at periapsis
 		path.keys.push_back(k);
 	}
 	path.Normalize();

@@ -77,9 +77,9 @@ in the Sky panel.
 
 ## Camera paths and observers
 
-`resources/paths/tour.txt` is a ~75 s flight from far away down to the photon sphere (the storyboard in
-PLAN.md); `--tour` loads the built-in version, `--path FILE` loads a saved one. Press K to add keyframes
-from the current view, edit/scrub them in the *Camera path* panel, and Save/Load text files. Positions
+`resources/paths/tour.txt` is a ~44 s hyperbolic fly-by: a fast approach from 220M, a close pass at 7.5M at about 0.4c, and a flight back out, with the hole kept centered the whole way (see "Aim at hole" below). The
+original storyboard is in PLAN.md; `--tour` loads the built-in version, `--path FILE` loads a saved one. Press K to add keyframes
+from the current view, edit/scrub them in the *Camera path* panel, and Save/Load text files. A keyframe's "Aim at hole" setting makes the camera look at the hole and, for a fast camera, compensates for aberration so the hole stays centered. Positions
 are in units of M (the hole is at the origin). The camera eases in and out at the ends.
 
 The *Observer* panel chooses how the camera moves relative to a hovering observer: free fall (v = sqrt(2M/r)),

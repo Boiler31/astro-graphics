@@ -14,6 +14,7 @@ struct Keyframe
 	float fov = 60.f;    // degrees
 	float boost = 0.f;
 	float roll = 0.f;    // degrees about the view direction (unwrapped along the path)
+	float look = 0.f;    // 0..1: how strongly the camera is aimed at the black hole (overrides yaw/pitch)
 };
 
 // A smooth camera flight through keyframes: every channel (position, yaw, pitch, fov, boost) is
@@ -39,8 +40,8 @@ public:
 	bool Save(const std::string& file, int observerModel) const;
 	bool Load(const std::string& file, int* observerModel = nullptr);
 
-	// The ~75 s tour from PLAN.md section 6: distant lensing, approach, near edge-on, an orbit,
-	// a descent with time dilation, and a plunge toward the photon sphere.
+	// The ~44 s tour: a hyperbolic fly-by. Distant lensing, a fast approach, a close pass at 7.5M
+	// at about 0.4c with the hole kept centered, then flying back out with the hole still framed.
 	static CameraPath DefaultTour();
 
 	// Yaw/pitch (degrees) that make a camera at `pos` look at the origin.

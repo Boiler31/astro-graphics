@@ -70,3 +70,15 @@ glm::dvec3 AberrateToStaticFrame(const glm::dvec3& n, const glm::dvec3& beta, do
 	}
 	return glm::normalize(n / gamma - beta + (gamma / (1.0 + gamma)) * bn * beta);
 }
+
+glm::dvec3 AberrateToObserverFrame(const glm::dvec3& nStatic, const glm::dvec3& beta)
+{
+	double b2 = glm::dot(beta, beta);
+	if (b2 < 1e-14) {
+		return nStatic;
+	}
+	// The inverse of a boost is the boost by -beta.
+	double gamma = 1.0 / std::sqrt(1.0 - b2);
+	double bn = glm::dot(beta, nStatic);
+	return glm::normalize(nStatic / gamma + beta + (gamma / (1.0 + gamma)) * bn * beta);
+}

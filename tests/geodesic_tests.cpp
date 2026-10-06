@@ -189,6 +189,15 @@ static void TestObservers()
 	Check(std::fabs(glm::length(a) - 1.0) < 1e-12, "aberrated direction is a unit vector", "|n| = %.12f (%.0f)", glm::length(a), 1.0);
 	Check(glm::length(geo_ab(n, glm::dvec3(0.0), nullptr) - n) < 1e-15, "aberration is the identity at rest", "%.0f %.0f", 0.0, 0.0);
 
+	// Aberrating to the static frame and back is the identity (used to keep the hole centered).
+	for (double beta : {0.2, 0.6, 0.95}) {
+		glm::dvec3 b = beta * glm::normalize(glm::dvec3(0.4, -0.2, 0.9));
+		glm::dvec3 back = AberrateToObserverFrame(AberrateToStaticFrame(n, b, nullptr), b);
+		char name[96];
+		std::snprintf(name, sizeof(name), "aberration round trip (beta = %.2f)", beta);
+		Check(glm::length(back - n) < 1e-12, name, "error %.2e (limit %.0e)", glm::length(back - n), 1e-12);
+	}
+
 	// Free fall from rest at infinity: v = sqrt(2M/r); orbiting gas: v = sqrt(M/(r-2M)).
 	glm::vec3 pos(0, 0, 10.f);
 	glm::vec3 ff = ObserverVelocity(ObserverModel::FreeFall, pos, glm::vec3(0, 0, -1), 1.f, 0.8f);

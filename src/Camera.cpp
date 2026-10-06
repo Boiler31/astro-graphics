@@ -55,8 +55,15 @@ void Camera::SetOrientation(float yawDeg, float pitchDeg)
 void Camera::Rotate(float dx, float dy)
 {
 	const float sensitivity = 0.12f; // degrees per pixel
-	yaw += dx * sensitivity;
-	pitch = std::clamp(pitch - dy * sensitivity, -89.f, 89.f);
+	// The mouse moves the view along the *screen's* axes. With roll, those are the level-horizon
+	// right/up axes rotated by the roll angle, so project the screen motion back onto yaw (along
+	// the level right axis) and pitch (along the level up axis).
+	const float a = glm::radians(rollDeg);
+	const float c = std::cos(a), s = std::sin(a);
+	const float dYaw = dx * c - dy * s;
+	const float dPitch = -dx * s - dy * c;
+	yaw += dYaw * sensitivity;
+	pitch = std::clamp(pitch + dPitch * sensitivity, -89.f, 89.f);
 }
 
 void Camera::Update(GLFWwindow* window, float dt)

@@ -320,10 +320,23 @@ int main(int argc, char** argv)
 		camera.fovDeg = k.fov;
 		camera.rollDeg = k.roll;
 		observerBoost = k.boost;
+		if (k.look > 0.f) {
+			// Aim at the black hole. A moving camera sees the hole displaced toward its direction of
+			// motion (aberration), so aim at where the hole *appears* to be to keep it centered.
+			const glm::dvec3 toHole = glm::normalize(-glm::dvec3(k.position));
+			const glm::vec3 beta = ObserverVelocity(observerModel, k.position, glm::vec3(toHole), k.boost, viewSpeed);
+			const glm::dvec3 f = AberrateToObserverFrame(toHole, glm::dvec3(beta));
+			const float aimYaw = glm::degrees(static_cast<float>(std::atan2(f.z, f.x)));
+			const float aimPitch = glm::degrees(static_cast<float>(std::asin(std::clamp(f.y, -1.0, 1.0))));
+			float dy = aimYaw - k.yaw; // blend along the short way round
+			while (dy > 180.f) dy -= 360.f;
+			while (dy < -180.f) dy += 360.f;
+			camera.SetOrientation(k.yaw + dy * k.look, k.pitch + (aimPitch - k.pitch) * k.look);
+		}
 	};
 	auto loadTour = [&]() {
 		path = CameraPath::DefaultTour();
-		observerModel = ObserverModel::FreeFall; // the tour ends with a plunge
+		observerModel = ObserverModel::CircularOrbit; // the fly-by moves the way the disk gas does at closest approach
 		pathTime = 0.f;
 		selectedKey = -1;
 	};
@@ -706,6 +719,8 @@ int main(int argc, char** argv)
 					path.keys[selectedKey].time = pathTime;
 					path.Normalize();
 				}
+				ImGui::SliderFloat("Aim at hole", &path.keys[selectedKey].look, 0.f, 1.f, "%.2f");
+				ImGui::TextDisabled("1 = camera always looks at (and centers) the hole");
 			}
 			if (ImGui::Button("Load tour")) {
 				loadTour();

@@ -31,3 +31,9 @@ double ClockRate(double r, double beta);
 // arriving along that ray: > 1 (blueshift) when looking forward.
 // This is the same math as aberrate() in shaders/blackhole.frag.
 glm::dvec3 AberrateToStaticFrame(const glm::dvec3& n, const glm::dvec3& beta, double* doppler = nullptr);
+
+// The inverse of AberrateToStaticFrame: the direction (in the moving observer's frame) in which an
+// object that lies along `nStatic` in the static observer's frame appears. Used to keep the black
+// hole centered for a fast camera: it appears shifted toward the direction of motion, so the
+// camera has to look that much further forward to center it.
+glm::dvec3 AberrateToObserverFrame(const glm::dvec3& nStatic, const glm::dvec3& beta);
